@@ -89,3 +89,14 @@ html, body, #root {
   border-left: 3px solid #ef5350;
 }
 
+/* Hide any potential TradingView or chart logos/watermarks */
+div[class*="tv-lightweight-charts"] a,
+div[class*="tv-lightweight-charts"] svg,
+.tv-lightweight-charts a,
+.tv-lightweight-charts svg {
+  display: none !important;
+  pointer-events: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+

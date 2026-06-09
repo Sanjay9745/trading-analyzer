@@ -2,9 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { Chart } from './components/Chart';
 import { Dashboard } from './components/Dashboard';
 import { 
-  Shield, Radio, Activity, AlertTriangle, Play, Plus, Trash2, 
-  Settings, Layers, Move, Terminal, Settings2, HelpCircle, 
-  DollarSign, Briefcase, PlusCircle, ChevronRight, ChevronLeft, RefreshCw 
+  Radio, Activity, AlertTriangle, Play, Plus, Trash2, 
+  Settings, Move, Terminal, PlusCircle, RefreshCw, PenTool 
 } from 'lucide-react';
 
 const API_BASE = 'http://localhost:8000';
@@ -18,6 +17,7 @@ interface ChartSettings {
   showNeckline: boolean;
   showPatternMarkers: boolean;
   showTradeSetup: boolean;
+  showCandlestickPatterns: boolean;
 }
 
 interface MockTrade {
@@ -35,15 +35,19 @@ function App() {
   const [activeHSPattern, setActiveHSPattern] = useState<any | null>(null);
   const [activeTradeReport, setActiveTradeReport] = useState<any | null>(null);
   
-  // UI & Panel States
+  // UI & Panel Visibility States
   const [isScanning, setIsScanning] = useState(false);
   const [loadingChart, setLoadingChart] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [sidebarTab, setSidebarTab] = useState<'watchlist' | 'settings'>('watchlist');
+  
+  // Toggles for showing/hiding panels
+  const [showLeftToolbar, setShowLeftToolbar] = useState(true);
+  const [showBottomPanel, setShowBottomPanel] = useState(true);
   const [showRightSidebar, setShowRightSidebar] = useState(true);
   const [showFloatingPanel, setShowFloatingPanel] = useState(true);
   
-  // Live simulation states
+  // Live simulation & WebSockets
   const [livePrice, setLivePrice] = useState<number | null>(null);
   const [mockTrade, setMockTrade] = useState<MockTrade | null>(null);
   const [mockTradeQty, setMockTradeQty] = useState<number>(100);
@@ -56,7 +60,7 @@ function App() {
   const [scanLogs, setScanLogs] = useState<string[]>([
     '[SYSTEM] Antigravity Quant Platform Engine Initialized.',
     '[DB] Connected to MongoDB database successfully.',
-    '[CACHE] Cache status: ONLINE. Default assets loaded.',
+    '[WEBSOCKET] Dynamic WebSockets connected for live price feeds.',
   ]);
 
   // Settings
@@ -69,7 +73,40 @@ function App() {
     showNeckline: true,
     showPatternMarkers: true,
     showTradeSetup: true,
+    showCandlestickPatterns: true,
   });
+
+  const [intervalState, setIntervalState] = useState<'1d' | '1h' | '15m' | '5m'>('1d');
+  const [chartType, setChartType] = useState<'candlestick' | 'line' | 'bar' | 'area'>('candlestick');
+  const [drawings, setDrawings] = useState<any>({
+    horizontalLines: [],
+    trendLines: [],
+    fibonaccis: [],
+    texts: [],
+  });
+
+  const handleResetAll = () => {
+    setChartSettings({
+      showEma20: true,
+      showEma50: true,
+      showEma200: true,
+      showVolume: true,
+      showHSOutline: true,
+      showNeckline: true,
+      showPatternMarkers: true,
+      showTradeSetup: true,
+      showCandlestickPatterns: true,
+    });
+    setIntervalState('1d');
+    setChartType('candlestick');
+    setDrawings({
+      horizontalLines: [],
+      trendLines: [],
+      fibonaccis: [],
+      texts: [],
+    });
+    addLog('[SYSTEM] All settings, chart styles, timeframes, and active manual drawings have been reset to defaults.');
+  };
 
   // Floating Panel Draggable State
   const [floatingPos, setFloatingPos] = useState({ x: 80, y: 100 });
@@ -79,9 +116,8 @@ function App() {
   const pollIntervalRef = useRef<any>(null);
   const watchlistAddRef = useRef<HTMLInputElement>(null);
 
-  // 1. Drag Handlers for Floating Widget
+  // Drag Handlers for Floating Widget
   const handleMouseDown = (e: React.MouseEvent) => {
-    // Only drag on header element click
     const target = e.target as HTMLElement;
     if (!target.closest('.drag-handle')) return;
     
@@ -117,22 +153,18 @@ function App() {
     };
   }, [isDragging]);
 
-  // 2. Fetch Watchlist on Mount
+  // Fetch Watchlist on Mount
   useEffect(() => {
     fetchWatchlist();
     fetchReports();
   }, []);
 
-  // 3. Load chart data whenever selectedTicker changes
+  // Load chart data whenever selectedTicker or intervalState changes
   useEffect(() => {
     if (selectedTicker) {
       loadTickerData(selectedTicker);
-      // Reset active mock trade when switching stocks unless it belongs to the active stock
-      if (mockTrade && mockTrade.ticker !== selectedTicker) {
-        // We can keep it or close it, let's keep it but it won't render execution line on other charts
-      }
     }
-  }, [selectedTicker]);
+  }, [selectedTicker, intervalState]);
 
   const addLog = (message: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -144,9 +176,10 @@ function App() {
       const res = await fetch(`${API_BASE}/api/watchlist`);
       if (res.ok) {
         const data = await res.json();
-        setWatchlist(data);
-        if (data.length > 0 && !selectedTicker) {
-          setSelectedTicker(data[0]);
+        const uniqueData = Array.from(new Set(data as string[]));
+        setWatchlist(uniqueData);
+        if (uniqueData.length > 0 && !selectedTicker) {
+          setSelectedTicker(uniqueData[0]);
         }
       }
     } catch (err) {
@@ -161,14 +194,21 @@ function App() {
       const res = await fetch(`${API_BASE}/api/scanner/report`);
       if (res.ok) {
         const data = await res.json();
-        setReports(data);
+        // Deduplicate by ticker (keep the first occurrence, which is already sorted by backend)
+        const seen = new Set<string>();
+        const uniqueReports = data.filter((r: any) => {
+          if (seen.has(r.ticker)) return false;
+          seen.add(r.ticker);
+          return true;
+        });
+        setReports(uniqueReports);
       }
     } catch (err) {
       console.error("Failed to load scanner reports:", err);
     }
   };
 
-  // 4. Spread calculation utilities
+  // Spread calculation utilities
   const computeFrontendEMAs = (data: any[]) => {
     if (data.length === 0) return;
     const calculateEMA = (period: number, key: string) => {
@@ -193,14 +233,13 @@ function App() {
     addLog(`[FETCH] Loading historical candles for ${ticker}...`);
 
     if (ticker.includes('/')) {
-      // Custom Pair Spread logic
       const [tickerA, tickerB] = ticker.split('/');
-      addLog(`[SPREAD] Parsing pair spread ratio: ${tickerA} / ${tickerB}`);
+      addLog(`[SPREAD] Parsing pair spread ratio: ${tickerA} / ${tickerB} (Interval: ${intervalState})`);
 
       try {
         const [resA, resB] = await Promise.all([
-          fetch(`${API_BASE}/api/ticker/${tickerA}`),
-          fetch(`${API_BASE}/api/ticker/${tickerB}`)
+          fetch(`${API_BASE}/api/ticker/${tickerA}?interval=${intervalState}`),
+          fetch(`${API_BASE}/api/ticker/${tickerB}?interval=${intervalState}`)
         ]);
 
         if (!resA.ok || !resB.ok) {
@@ -256,9 +295,8 @@ function App() {
         setLoadingChart(false);
       }
     } else {
-      // Normal single stock load
       try {
-        const res = await fetch(`${API_BASE}/api/ticker/${ticker}`);
+        const res = await fetch(`${API_BASE}/api/ticker/${ticker}?interval=${intervalState}`);
         if (res.ok) {
           const data = await res.json();
           setActiveHistory(data.history);
@@ -337,7 +375,8 @@ function App() {
       });
       if (res.ok) {
         const data = await res.json();
-        setWatchlist(data.watchlist);
+        const uniqueData = Array.from(new Set(data.watchlist as string[]));
+        setWatchlist(uniqueData);
         setSelectedTicker(cleanTicker);
         addLog(`[SUCCESS] ${cleanTicker} added and selected.`);
       }
@@ -355,7 +394,6 @@ function App() {
     const spreadTicker = `${cleanA}/${cleanB}`;
     addLog(`[WATCHLIST] Creating custom pair ratio: ${spreadTicker}...`);
     
-    // Add to watchlist locally (not saved on backend db since it splits yfinance, we calculate ratio on client)
     if (!watchlist.includes(spreadTicker)) {
       setWatchlist(prev => [...prev, spreadTicker]);
     }
@@ -366,7 +404,6 @@ function App() {
 
   const handleRemoveFromWatchlist = async (tickerName: string) => {
     addLog(`[WATCHLIST] Removing ${tickerName}...`);
-    // Local check for spreads
     if (tickerName.includes('/')) {
       const newWl = watchlist.filter(w => w !== tickerName);
       setWatchlist(newWl);
@@ -383,9 +420,10 @@ function App() {
       });
       if (res.ok) {
         const data = await res.json();
-        setWatchlist(data.watchlist);
-        if (selectedTicker === tickerName && data.watchlist.length > 0) {
-          setSelectedTicker(data.watchlist[0]);
+        const uniqueData = Array.from(new Set(data.watchlist as string[]));
+        setWatchlist(uniqueData);
+        if (selectedTicker === tickerName && uniqueData.length > 0) {
+          setSelectedTicker(uniqueData[0]);
         }
         addLog(`[SUCCESS] Removed ${tickerName} from database watchlist.`);
       }
@@ -428,6 +466,11 @@ function App() {
     livePnlPct = (livePnl / (mockTrade.entryPrice * mockTrade.qty)) * 100;
   }
 
+  // Monitor live prices to logs on mock trade state
+  const handleLivePriceUpdate = (price: number) => {
+    setLivePrice(price);
+  };
+
   return (
     <div className="flex flex-col h-screen w-screen bg-[#0c0f16] text-[#d1d4dc] font-sans overflow-hidden">
       
@@ -448,36 +491,75 @@ function App() {
           </div>
         </div>
 
-        {/* Global Toolbar Controllers */}
+        {/* Global Toolbar Controllers & Toggle switches */}
         <div className="flex items-center space-x-4">
-          <button
-            onClick={() => setShowFloatingPanel(prev => !prev)}
-            className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs font-semibold border transition-all ${
-              showFloatingPanel 
-                ? 'bg-tv-green/20 text-tv-green border-tv-green/30' 
-                : 'bg-transparent text-tv-muted border-tv-border hover:text-white'
-            }`}
-          >
-            <Move className="w-3.5 h-3.5" />
-            <span>Setup HUD</span>
-          </button>
+          
+          {/* Panel Visibility Toggles */}
+          <div className="flex items-center space-x-1.5 bg-[#0c0f16]/60 p-1.5 rounded-lg border border-tv-border/40">
+            <span className="text-[9px] text-tv-muted font-bold uppercase tracking-wider px-1">Panels:</span>
+            
+            <button
+              onClick={() => setShowLeftToolbar(prev => !prev)}
+              title="Toggle Left Drawings Toolbar"
+              className={`p-1.5 rounded transition-all ${
+                showLeftToolbar ? 'bg-tv-green/20 text-tv-green border border-tv-green/30' : 'text-tv-muted hover:text-white border border-transparent'
+              }`}
+            >
+              <PenTool className="w-3.5 h-3.5" />
+            </button>
 
-          <button
-            onClick={() => setShowRightSidebar(prev => !prev)}
-            className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs font-semibold border transition-all ${
-              showRightSidebar 
-                ? 'bg-tv-green/20 text-tv-green border-tv-green/30' 
-                : 'bg-transparent text-tv-muted border-tv-border hover:text-white'
-            }`}
-          >
-            <Settings2 className="w-3.5 h-3.5" />
-            <span>{showRightSidebar ? 'Hide Panel' : 'Settings'}</span>
-          </button>
+            <button
+              onClick={() => setShowBottomPanel(prev => !prev)}
+              title="Toggle Screener & Logs Panel"
+              className={`p-1.5 rounded transition-all ${
+                showBottomPanel ? 'bg-tv-green/20 text-tv-green border border-tv-green/30' : 'text-tv-muted hover:text-white border border-transparent'
+              }`}
+            >
+              <Terminal className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              onClick={() => setShowRightSidebar(prev => !prev)}
+              title="Toggle Settings Sidebar"
+              className={`p-1.5 rounded transition-all ${
+                showRightSidebar ? 'bg-tv-green/20 text-tv-green border border-tv-green/30' : 'text-tv-muted hover:text-white border border-transparent'
+              }`}
+            >
+              <Settings className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              onClick={() => setShowFloatingPanel(prev => !prev)}
+              title="Toggle HUD Trade Overlay"
+              className={`p-1.5 rounded transition-all ${
+                showFloatingPanel ? 'bg-tv-green/20 text-tv-green border border-tv-green/30' : 'text-tv-muted hover:text-white border border-transparent'
+              }`}
+            >
+              <Move className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* Interval Selector Tab Group */}
+          <div className="flex items-center space-x-1 bg-[#0c0f16]/60 p-1 rounded-lg border border-tv-border/40">
+            {['1d', '1h', '15m', '5m'].map((i) => (
+              <button
+                key={i}
+                onClick={() => setIntervalState(i as any)}
+                className={`px-2.5 py-1 text-xs rounded font-bold uppercase transition-all ${
+                  intervalState === i
+                    ? 'bg-tv-green text-white shadow-md'
+                    : 'text-tv-muted hover:text-white hover:bg-tv-border/20'
+                }`}
+              >
+                {i}
+              </button>
+            ))}
+          </div>
 
           <div className="flex items-center space-x-1.5 text-xs bg-[#0c0f16] border border-tv-border px-3 py-1.5 rounded">
             <Activity className="w-3.5 h-3.5 text-tv-green animate-pulse" />
             <span className="text-tv-muted">Market Ticks:</span>
-            <span className="font-semibold text-white">LIVE FEED</span>
+            <span className="font-semibold text-white">LIVE WEBSOCKET</span>
           </div>
 
           <button
@@ -498,16 +580,16 @@ function App() {
       {/* 2. Main Work Area (Split Pane) */}
       <div className="flex flex-grow w-full overflow-hidden">
         
-        {/* Left Side: Chart Canvas Container */}
-        <div className="flex-grow h-full flex flex-col relative overflow-hidden">
+        {/* Left main workspace */}
+        <div className="flex flex-col flex-grow h-full overflow-hidden">
           
-          {/* Chart Wrapper */}
+          {/* Top Panel: Chart */}
           <div className="flex-grow w-full relative z-0">
             {loadingChart ? (
               <div className="absolute inset-0 flex items-center justify-center bg-[#0c0f16]/90 z-10 backdrop-blur-sm">
                 <div className="flex flex-col items-center space-y-3">
                   <RefreshCw className="w-8 h-8 text-tv-green animate-spin" />
-                  <span className="text-xs text-tv-muted font-medium">Downloading market bars & solving geometry...</span>
+                  <span className="text-xs text-tv-muted font-medium">Connecting sockets & fetching history...</span>
                 </div>
               </div>
             ) : activeHistory.length > 0 ? (
@@ -518,7 +600,12 @@ function App() {
                 tradeReport={activeTradeReport}
                 settings={chartSettings}
                 mockExecutionPrice={mockTrade && mockTrade.ticker === selectedTicker ? mockTrade.entryPrice : null}
-                onLivePriceUpdate={(price) => setLivePrice(price)}
+                onLivePriceUpdate={handleLivePriceUpdate}
+                showLeftToolbar={showLeftToolbar}
+                drawings={drawings}
+                setDrawings={setDrawings}
+                chartType={chartType}
+                setChartType={setChartType}
               />
             ) : (
               <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-[#0c0f16]">
@@ -529,132 +616,129 @@ function App() {
                 </p>
               </div>
             )}
-          </div>
 
-          {/* Draggable HUD Setup Panel Overlay */}
-          {showFloatingPanel && (
-            <div
-              onMouseDown={handleMouseDown}
-              style={{ left: `${floatingPos.x}px`, top: `${floatingPos.y}px` }}
-              className="absolute w-80 glass-panel text-white rounded-lg shadow-2xl z-30 select-none overflow-hidden live-border-pulse"
-            >
-              {/* Header handle */}
-              <div className="drag-handle cursor-grab active:cursor-grabbing px-4 py-2.5 bg-[#141824]/90 border-b border-tv-border/50 flex justify-between items-center text-xs font-black uppercase tracking-wider text-[#d1d4dc]">
-                <div className="flex items-center space-x-1.5">
-                  <Move className="w-3.5 h-3.5 text-tv-green" />
-                  <span>Setup Inspector: {selectedTicker}</span>
-                </div>
-                <button 
-                  onClick={() => setShowFloatingPanel(false)}
-                  className="text-tv-muted hover:text-white text-sm font-bold"
-                >
-                  ✕
-                </button>
-              </div>
-
-              {/* Panel Details */}
-              <div className="p-4 space-y-4 text-xs">
-                {/* Price Display */}
-                <div className="flex justify-between items-center bg-[#0c0f16]/60 p-2.5 rounded border border-tv-border/30">
-                  <span className="text-tv-muted font-semibold">Live Price:</span>
-                  <span className="text-base font-black text-white tracking-tight">
-                    {livePrice ? `$${livePrice.toFixed(2)}` : '--'}
-                  </span>
+            {/* Draggable HUD Setup Panel Overlay */}
+            {showFloatingPanel && (
+              <div
+                onMouseDown={handleMouseDown}
+                style={{ left: `${floatingPos.x}px`, top: `${floatingPos.y}px` }}
+                className="absolute w-80 glass-panel text-white rounded-lg shadow-2xl z-30 select-none overflow-hidden live-border-pulse"
+              >
+                {/* Header handle */}
+                <div className="drag-handle cursor-grab active:cursor-grabbing px-4 py-2.5 bg-[#141824]/90 border-b border-tv-border/50 flex justify-between items-center text-xs font-black uppercase tracking-wider text-[#d1d4dc]">
+                  <div className="flex items-center space-x-1.5">
+                    <Move className="w-3.5 h-3.5 text-tv-green" />
+                    <span>Setup HUD: {selectedTicker}</span>
+                  </div>
+                  <button 
+                    onClick={() => setShowFloatingPanel(false)}
+                    className="text-tv-muted hover:text-white text-sm font-bold animate-pulse"
+                  >
+                    ✕
+                  </button>
                 </div>
 
-                {/* Setup Details */}
-                {activeTradeReport ? (
-                  <div className={`p-3 rounded-lg border ${
-                    activeTradeReport.signal === 'Buy' ? 'trade-glow-buy' : 'trade-glow-sell'
-                  }`}>
-                    <div className="flex justify-between font-bold text-white mb-2">
-                      <span className="text-[11px] uppercase">{activeTradeReport.pattern}</span>
-                      <span className={activeTradeReport.signal === 'Buy' ? 'text-tv-green' : 'text-tv-red'}>
-                        {activeTradeReport.signal.toUpperCase()} SETUP
-                      </span>
-                    </div>
-                    <div className="space-y-1 text-[11px] text-slate-300">
-                      <div className="flex justify-between">
-                        <span>Entry Trigger:</span>
-                        <span className="font-semibold text-white">${activeTradeReport.entry.toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Take Profit:</span>
-                        <span className="font-semibold text-tv-green">${activeTradeReport.take_profit.toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Stop Loss:</span>
-                        <span className="font-semibold text-tv-red">${activeTradeReport.stop_loss.toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between pt-1 border-t border-tv-border/20 mt-1">
-                        <span>Risk Reward:</span>
-                        <span className="font-bold text-white">{activeTradeReport.risk_reward_ratio}:1</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Win Conviction:</span>
-                        <span className="font-bold text-yellow-400">{activeTradeReport.win_conviction_pct}%</span>
-                      </div>
-                    </div>
+                {/* Panel Details */}
+                <div className="p-4 space-y-4 text-xs">
+                  <div className="flex justify-between items-center bg-[#0c0f16]/60 p-2.5 rounded border border-tv-border/30">
+                    <span className="text-tv-muted font-semibold">Live Price:</span>
+                    <span className="text-base font-black text-white tracking-tight">
+                      {livePrice ? `$${livePrice.toFixed(2)}` : '--'}
+                    </span>
                   </div>
-                ) : (
-                  <div className="p-3 bg-[#0c0f16]/40 rounded border border-tv-border/30 text-center italic text-tv-muted text-[11px]">
-                    No active geometric setups found.
-                  </div>
-                )}
 
-                {/* Mock Trading Simulator controls */}
-                <div className="border-t border-tv-border/40 pt-3">
-                  <div className="text-[10px] text-tv-muted font-bold uppercase tracking-wider mb-2">Live Trade Simulator</div>
-
-                  {mockTrade && mockTrade.ticker === selectedTicker ? (
-                    <div className="bg-[#121622]/60 p-3 rounded border border-tv-border/40 space-y-2">
-                      <div className="flex justify-between font-semibold">
-                        <span>Position:</span>
-                        <span className={mockTrade.side === 'Buy' ? 'text-tv-green' : 'text-tv-red'}>
-                          {mockTrade.side.toUpperCase()} {mockTrade.qty} Shares
+                  {activeTradeReport ? (
+                    <div className={`p-3 rounded-lg border ${
+                      activeTradeReport.signal === 'Buy' ? 'trade-glow-buy' : 'trade-glow-sell'
+                    }`}>
+                      <div className="flex justify-between font-bold text-white mb-2">
+                        <span className="text-[11px] uppercase">{activeTradeReport.pattern}</span>
+                        <span className={activeTradeReport.signal === 'Buy' ? 'text-tv-green' : 'text-tv-red'}>
+                          {activeTradeReport.signal.toUpperCase()} SETUP
                         </span>
                       </div>
-                      <div className="flex justify-between">
-                        <span>Entry Price:</span>
-                        <span className="font-semibold text-white">${mockTrade.entryPrice.toFixed(2)}</span>
+                      <div className="space-y-1 text-[11px] text-slate-300">
+                        <div className="flex justify-between">
+                          <span>Entry Trigger:</span>
+                          <span className="font-semibold text-white">${activeTradeReport.entry.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Take Profit:</span>
+                          <span className="font-semibold text-tv-green">${activeTradeReport.take_profit.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Stop Loss:</span>
+                          <span className="font-semibold text-tv-red">${activeTradeReport.stop_loss.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between pt-1 border-t border-tv-border/20 mt-1">
+                          <span>Risk Reward:</span>
+                          <span className="font-bold text-white">{activeTradeReport.risk_reward_ratio}:1</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Win Conviction:</span>
+                          <span className="font-bold text-yellow-400">{activeTradeReport.win_conviction_pct}%</span>
+                        </div>
                       </div>
-                      <div className="flex justify-between items-center pt-1.5 border-t border-tv-border/20">
-                        <span className="font-bold">Floating P&L:</span>
-                        <span className={`text-sm font-black ${livePnl >= 0 ? 'text-tv-green' : 'text-tv-red'}`}>
-                          {livePnl >= 0 ? '+' : ''}${livePnl.toFixed(2)} ({livePnlPct.toFixed(2)}%)
-                        </span>
-                      </div>
-                      <button
-                        onClick={closeMockTrade}
-                        className="w-full mt-2 py-1.5 rounded font-bold text-[11px] bg-tv-red hover:bg-tv-red-hover text-white transition-all shadow-md shadow-tv-red/10"
-                      >
-                        Close Position
-                      </button>
                     </div>
                   ) : (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <label className="text-[10px] text-tv-muted font-medium">Quantity:</label>
-                        <input
-                          type="number"
-                          value={mockTradeQty}
-                          onChange={(e) => setMockTradeQty(Math.max(1, parseInt(e.target.value) || 0))}
-                          className="w-20 bg-[#0c0f16] border border-tv-border rounded px-2 py-0.5 text-right font-semibold text-white text-[11px] focus:outline-none focus:border-tv-green"
-                        />
-                      </div>
-                      
-                      <div className="flex space-x-2">
+                    <div className="p-3 bg-[#0c0f16]/40 rounded border border-tv-border/30 text-center italic text-tv-muted text-[11px]">
+                      No active geometric setups found.
+                    </div>
+                  )}
+
+                  {/* Mock Trading Simulator controls */}
+                  <div className="border-t border-tv-border/40 pt-3">
+                    <div className="text-[10px] text-tv-muted font-bold uppercase tracking-wider mb-2">Live Trade Simulator</div>
+
+                    {mockTrade && mockTrade.ticker === selectedTicker ? (
+                      <div className="bg-[#121622]/60 p-3 rounded border border-tv-border/40 space-y-2">
+                        <div className="flex justify-between font-semibold">
+                          <span>Position:</span>
+                          <span className={mockTrade.side === 'Buy' ? 'text-tv-green' : 'text-tv-red'}>
+                            {mockTrade.side.toUpperCase()} {mockTrade.qty} Shares
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Entry Price:</span>
+                          <span className="font-semibold text-white">${mockTrade.entryPrice.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between items-center pt-1.5 border-t border-tv-border/20">
+                          <span className="font-bold">Floating P&L:</span>
+                          <span className={`text-sm font-black ${livePnl >= 0 ? 'text-tv-green' : 'text-tv-red'}`}>
+                            {livePnl >= 0 ? '+' : ''}${livePnl.toFixed(2)} ({livePnlPct.toFixed(2)}%)
+                          </span>
+                        </div>
                         <button
-                          onClick={() => executeMockTrade('Buy')}
-                          className="flex-grow py-1.5 rounded font-bold bg-tv-green hover:bg-tv-green-hover text-white transition-all shadow-md shadow-tv-green/10 text-[11px]"
+                          onClick={closeMockTrade}
+                          className="w-full mt-2 py-1.5 rounded font-bold text-[11px] bg-tv-red hover:bg-tv-red-hover text-white transition-all shadow-md shadow-tv-red/10"
                         >
-                          Buy Long
+                          Close Position
                         </button>
-                        <button
-                          onClick={() => executeMockTrade('Sell')}
-                          className="flex-grow py-1.5 rounded font-bold bg-tv-red hover:bg-tv-red-hover text-white transition-all shadow-md shadow-tv-red/10 text-[11px]"
-                        >
-                          Sell Short
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] text-tv-muted font-medium">Quantity:</label>
+                          <input
+                            type="number"
+                            value={mockTradeQty}
+                            onChange={(e) => setMockTradeQty(Math.max(1, parseInt(e.target.value) || 0))}
+                            className="w-20 bg-[#0c0f16] border border-tv-border rounded px-2 py-0.5 text-right font-semibold text-white text-[11px] focus:outline-none focus:border-tv-green"
+                          />
+                        </div>
+                        
+                        <div className="flex space-x-2">
+                          <button
+                            onClick={() => executeMockTrade('Buy')}
+                            className="flex-grow py-1.5 rounded font-bold bg-tv-green hover:bg-tv-green-hover text-white transition-all shadow-md shadow-tv-green/10 text-[11px]"
+                          >
+                            Buy Long
+                          </button>
+                          <button
+                            onClick={() => executeMockTrade('Sell')}
+                            className="flex-grow py-1.5 rounded font-bold bg-tv-red hover:bg-tv-red-hover text-white transition-all shadow-md shadow-tv-red/10 text-[11px]"
+                          >
+                            Sell Short
                         </button>
                       </div>
                     </div>
@@ -663,280 +747,297 @@ function App() {
               </div>
             </div>
           )}
-
         </div>
 
-        {/* Right Side: Settings & Watchlist Sidebar panel */}
-        {showRightSidebar && (
-          <aside className="w-80 border-l border-tv-border bg-[#101420] flex flex-col h-full shrink-0 z-10">
-            {/* Sidebar Tab Header */}
-            <div className="flex border-b border-tv-border/50 bg-[#141824] shrink-0">
-              <button
-                onClick={() => setSidebarTab('watchlist')}
-                className={`flex-grow py-3 text-xs font-bold uppercase tracking-wider transition-colors ${
-                  sidebarTab === 'watchlist' 
-                    ? 'text-white border-b-2 border-tv-green bg-[#101420]/40' 
-                    : 'text-tv-muted hover:text-white'
-                }`}
-              >
-                Watchlist & Pairs
-              </button>
-              <button
-                onClick={() => setSidebarTab('settings')}
-                className={`flex-grow py-3 text-xs font-bold uppercase tracking-wider transition-colors ${
-                  sidebarTab === 'settings' 
-                    ? 'text-white border-b-2 border-tv-green bg-[#101420]/40' 
-                    : 'text-tv-muted hover:text-white'
-                }`}
-              >
-                Chart Layers
-              </button>
-            </div>
-
-            {/* Sidebar content body */}
-            <div className="flex-grow overflow-y-auto p-4 space-y-4">
-              
-              {sidebarTab === 'watchlist' ? (
-                <>
-                  {/* Single Ticker Addition */}
-                  <div className="space-y-2">
-                    <label className="text-[10px] text-tv-muted font-bold uppercase tracking-wider">Add Single Stock</label>
-                    <div className="flex space-x-2">
-                      <input
-                        ref={watchlistAddRef}
-                        type="text"
-                        placeholder="Add ticker (e.g. TSLA)"
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            handleAddToWatchlist(e.currentTarget.value);
-                            e.currentTarget.value = '';
-                          }
-                        }}
-                        className="flex-grow bg-[#0c0f16] border border-tv-border rounded px-3 py-1.5 text-xs text-white placeholder-tv-muted focus:outline-none focus:border-tv-green transition-all"
-                      />
-                      <button
-                        onClick={() => {
-                          if (watchlistAddRef.current) {
-                            handleAddToWatchlist(watchlistAddRef.current.value);
-                            watchlistAddRef.current.value = '';
-                          }
-                        }}
-                        className="bg-tv-border border border-tv-border hover:border-tv-muted hover:bg-tv-border/80 text-white rounded p-1.5 transition-all"
-                      >
-                        <Plus className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Watchlist Pair Creator (Spread Division) */}
-                  <form onSubmit={handleCreateCustomSpread} className="space-y-3 bg-[#141824]/60 p-3 rounded-lg border border-tv-border/40">
-                    <div className="text-[10px] text-white font-bold uppercase tracking-wider flex items-center space-x-1">
-                      <PlusCircle className="w-3.5 h-3.5 text-tv-green" />
-                      <span>Watchlist Pair Spread</span>
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-[9px] text-tv-muted block mb-0.5">Stock A</label>
-                        <input
-                          type="text"
-                          placeholder="AAPL"
-                          value={pairStockA}
-                          onChange={(e) => setPairStockA(e.target.value.toUpperCase())}
-                          className="w-full bg-[#0c0f16] border border-tv-border rounded px-2.5 py-1 text-xs text-white focus:outline-none focus:border-tv-green"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[9px] text-tv-muted block mb-0.5">Stock B</label>
-                        <input
-                          type="text"
-                          placeholder="MSFT"
-                          value={pairStockB}
-                          onChange={(e) => setPairStockB(e.target.value.toUpperCase())}
-                          className="w-full bg-[#0c0f16] border border-tv-border rounded px-2.5 py-1 text-xs text-white focus:outline-none focus:border-tv-green"
-                        />
-                      </div>
-                    </div>
-
-                    <button
-                      type="submit"
-                      className="w-full py-1.5 rounded bg-tv-green hover:bg-tv-green-hover text-white font-semibold text-xs transition-all shadow-md shadow-tv-green/15"
-                    >
-                      Create Spread Pair
-                    </button>
-                  </form>
-
-                  {/* Watchlist Items list */}
-                  <div className="space-y-2">
-                    <label className="text-[10px] text-tv-muted font-bold uppercase tracking-wider">Watchlist Items</label>
-                    <div className="divide-y divide-tv-border/20 border border-tv-border/30 rounded-lg overflow-hidden bg-[#0c0f16]/20">
-                      {watchlist.map((symbol) => {
-                        const report = reports.find((r) => r.ticker === symbol);
-                        const isSelected = selectedTicker === symbol;
-                        const hasSignal = report?.trade_report;
-
-                        return (
-                          <div
-                            key={symbol}
-                            onClick={() => setSelectedTicker(symbol)}
-                            className={`flex items-center justify-between p-3 cursor-pointer transition-colors duration-100 ${
-                              isSelected ? 'bg-tv-green/10 border-l-2 border-tv-green text-white' : 'hover:bg-tv-panel/40'
-                            }`}
-                          >
-                            <div>
-                              <div className="text-xs font-bold tracking-wide">{symbol}</div>
-                              <div className="text-[9px] text-tv-muted mt-0.5">
-                                {symbol.includes('/') ? 'Spread Ratio' : report ? `$${report.current_price.toFixed(2)}` : '--'}
-                              </div>
-                            </div>
-                            
-                            <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
-                              {hasSignal && (
-                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-extrabold uppercase ${
-                                  hasSignal.signal === 'Buy' ? 'bg-tv-green/10 text-tv-green' : 'bg-tv-red/10 text-tv-red'
-                                }`}>
-                                  {hasSignal.signal}
-                                </span>
-                              )}
-                              <button
-                                onClick={() => handleRemoveFromWatchlist(symbol)}
-                                className="text-tv-muted hover:text-tv-red p-1 rounded hover:bg-tv-border/40 transition-colors"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                      {watchlist.length === 0 && (
-                        <div className="p-8 text-center text-xs text-tv-muted italic">
-                          No stocks in watchlist. Add one above.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                /* Tab 2: Chart Layers / settings */
-                <div className="space-y-4">
-                  <div className="text-[10px] text-tv-muted font-bold uppercase tracking-wider mb-2">Overlay Indicators</div>
-                  
-                  <div className="space-y-3 bg-[#141824]/40 p-4 rounded-lg border border-tv-border/30">
-                    <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
-                      <input
-                        type="checkbox"
-                        checked={chartSettings.showEma20}
-                        onChange={(e) => setChartSettings(prev => ({ ...prev, showEma20: e.target.checked }))}
-                        className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
-                      />
-                      <span className="flex items-center space-x-2">
-                        <span className="w-3 h-1.5 bg-[#ff9800] rounded-full"></span>
-                        <span className="text-slate-200">Show EMA 20</span>
-                      </span>
-                    </label>
-
-                    <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
-                      <input
-                        type="checkbox"
-                        checked={chartSettings.showEma50}
-                        onChange={(e) => setChartSettings(prev => ({ ...prev, showEma50: e.target.checked }))}
-                        className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
-                      />
-                      <span className="flex items-center space-x-2">
-                        <span className="w-3 h-1.5 bg-[#2196f3] rounded-full"></span>
-                        <span className="text-slate-200">Show EMA 50</span>
-                      </span>
-                    </label>
-
-                    <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
-                      <input
-                        type="checkbox"
-                        checked={chartSettings.showEma200}
-                        onChange={(e) => setChartSettings(prev => ({ ...prev, showEma200: e.target.checked }))}
-                        className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
-                      />
-                      <span className="flex items-center space-x-2">
-                        <span className="w-3 h-1.5 bg-[#9c27b0] rounded-full"></span>
-                        <span className="text-slate-200">Show EMA 200</span>
-                      </span>
-                    </label>
-
-                    <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
-                      <input
-                        type="checkbox"
-                        checked={chartSettings.showVolume}
-                        onChange={(e) => setChartSettings(prev => ({ ...prev, showVolume: e.target.checked }))}
-                        className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
-                      />
-                      <span className="text-slate-200">Show Volume Histogram</span>
-                    </label>
-                  </div>
-
-                  <div className="text-[10px] text-tv-muted font-bold uppercase tracking-wider mb-2">Geometric Pattern Layers</div>
-
-                  <div className="space-y-3 bg-[#141824]/40 p-4 rounded-lg border border-tv-border/30">
-                    <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
-                      <input
-                        type="checkbox"
-                        checked={chartSettings.showHSOutline}
-                        onChange={(e) => setChartSettings(prev => ({ ...prev, showHSOutline: e.target.checked }))}
-                        className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
-                      />
-                      <span className="flex items-center space-x-2">
-                        <span className="w-3 h-1.5 bg-yellow-400 rounded-full"></span>
-                        <span className="text-slate-200">Show H&S Outlines</span>
-                      </span>
-                    </label>
-
-                    <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
-                      <input
-                        type="checkbox"
-                        checked={chartSettings.showNeckline}
-                        onChange={(e) => setChartSettings(prev => ({ ...prev, showNeckline: e.target.checked }))}
-                        className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
-                      />
-                      <span className="flex items-center space-x-2">
-                        <span className="w-3 h-1.5 bg-pink-500 rounded-full"></span>
-                        <span className="text-slate-200">Show Necklines</span>
-                      </span>
-                    </label>
-
-                    <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
-                      <input
-                        type="checkbox"
-                        checked={chartSettings.showPatternMarkers}
-                        onChange={(e) => setChartSettings(prev => ({ ...prev, showPatternMarkers: e.target.checked }))}
-                        className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
-                      />
-                      <span className="text-slate-200">Show Pattern Breakout Markers</span>
-                    </label>
-
-                    <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
-                      <input
-                        type="checkbox"
-                        checked={chartSettings.showTradeSetup}
-                        onChange={(e) => setChartSettings(prev => ({ ...prev, showTradeSetup: e.target.checked }))}
-                        className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
-                      />
-                      <span className="text-slate-200">Show Entry/SL/TP order lines</span>
-                    </label>
-                  </div>
-                </div>
-              )}
-            </div>
-          </aside>
+        {/* Bottom Panel */}
+        {showBottomPanel && (
+          <div className="h-64 shrink-0 w-full relative z-10">
+            <Dashboard
+              reports={reports}
+              selectedTicker={selectedTicker}
+              onSelectTicker={setSelectedTicker}
+              isScanning={isScanning}
+              scanLogs={scanLogs}
+            />
+          </div>
         )}
       </div>
 
-      {/* 3. Bottom Screener Dashboard Panel (Matrix & logs console) */}
-      <div className="h-64 shrink-0 w-full relative z-10">
-        <Dashboard
-          reports={reports}
-          selectedTicker={selectedTicker}
-          onSelectTicker={setSelectedTicker}
-          isScanning={isScanning}
-          scanLogs={scanLogs}
-        />
+      {/* Right Sidebar */}
+      {showRightSidebar && (
+        <aside className="w-80 border-l border-tv-border bg-[#101420] flex flex-col h-full shrink-0 z-10">
+          <div className="flex border-b border-tv-border/50 bg-[#141824] shrink-0">
+            <button
+              onClick={() => setSidebarTab('watchlist')}
+              className={`flex-grow py-3 text-xs font-bold uppercase tracking-wider transition-colors ${
+                sidebarTab === 'watchlist' 
+                  ? 'text-white border-b-2 border-tv-green bg-[#101420]/40' 
+                  : 'text-tv-muted hover:text-white'
+              }`}
+            >
+              Watchlist & Pairs
+            </button>
+            <button
+              onClick={() => setSidebarTab('settings')}
+              className={`flex-grow py-3 text-xs font-bold uppercase tracking-wider transition-colors ${
+                sidebarTab === 'settings' 
+                  ? 'text-white border-b-2 border-tv-green bg-[#101420]/40' 
+                  : 'text-tv-muted hover:text-white'
+              }`}
+            >
+              Chart Layers
+            </button>
+          </div>
+
+          <div className="flex-grow overflow-y-auto p-4 space-y-4">
+            
+            {sidebarTab === 'watchlist' ? (
+              <>
+                <div className="space-y-2">
+                  <label className="text-[10px] text-tv-muted font-bold uppercase tracking-wider">Add Single Stock</label>
+                  <div className="flex space-x-2">
+                    <input
+                      ref={watchlistAddRef}
+                      type="text"
+                      placeholder="Add ticker (e.g. TSLA)"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          handleAddToWatchlist(e.currentTarget.value);
+                          e.currentTarget.value = '';
+                        }
+                      }}
+                      className="flex-grow bg-[#0c0f16] border border-tv-border rounded px-3 py-1.5 text-xs text-white placeholder-tv-muted focus:outline-none focus:border-tv-green transition-all"
+                    />
+                    <button
+                      onClick={() => {
+                        if (watchlistAddRef.current) {
+                          handleAddToWatchlist(watchlistAddRef.current.value);
+                          watchlistAddRef.current.value = '';
+                        }
+                      }}
+                      className="bg-tv-border border border-tv-border hover:border-tv-muted hover:bg-tv-border/80 text-white rounded p-1.5 transition-all"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                <form onSubmit={handleCreateCustomSpread} className="space-y-3 bg-[#141824]/60 p-3 rounded-lg border border-tv-border/40">
+                  <div className="text-[10px] text-white font-bold uppercase tracking-wider flex items-center space-x-1">
+                    <PlusCircle className="w-3.5 h-3.5 text-tv-green" />
+                    <span>Watchlist Pair Spread</span>
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[9px] text-tv-muted block mb-0.5">Stock A</label>
+                      <input
+                        type="text"
+                        placeholder="AAPL"
+                        value={pairStockA}
+                        onChange={(e) => setPairStockA(e.target.value.toUpperCase())}
+                        className="w-full bg-[#0c0f16] border border-tv-border rounded px-2.5 py-1 text-xs text-white focus:outline-none focus:border-tv-green"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] text-tv-muted block mb-0.5">Stock B</label>
+                      <input
+                        type="text"
+                        placeholder="MSFT"
+                        value={pairStockB}
+                        onChange={(e) => setPairStockB(e.target.value.toUpperCase())}
+                        className="w-full bg-[#0c0f16] border border-tv-border rounded px-2.5 py-1 text-xs text-white focus:outline-none focus:border-tv-green"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-1.5 rounded bg-tv-green hover:bg-tv-green-hover text-white font-semibold text-xs transition-all shadow-md shadow-tv-green/15"
+                  >
+                    Create Spread Pair
+                  </button>
+                </form>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] text-tv-muted font-bold uppercase tracking-wider">Watchlist Items</label>
+                  <div className="divide-y divide-tv-border/20 border border-tv-border/30 rounded-lg overflow-hidden bg-[#0c0f16]/20">
+                    {watchlist.map((symbol) => {
+                      const report = reports.find((r) => r.ticker === symbol);
+                      const isSelected = selectedTicker === symbol;
+                      const hasSignal = report?.trade_report;
+
+                      return (
+                        <div
+                          key={symbol}
+                          onClick={() => setSelectedTicker(symbol)}
+                          className={`flex items-center justify-between p-3 cursor-pointer transition-colors duration-100 ${
+                            isSelected ? 'bg-tv-green/10 border-l-2 border-tv-green text-white' : 'hover:bg-tv-panel/40'
+                          }`}
+                        >
+                          <div>
+                            <div className="text-xs font-bold tracking-wide">{symbol}</div>
+                            <div className="text-[9px] text-tv-muted mt-0.5">
+                              {symbol.includes('/') ? 'Spread Ratio' : report ? `$${report.current_price.toFixed(2)}` : '--'}
+                            </div>
+                          </div>
+                          
+                          <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
+                            {hasSignal && (
+                              <span className={`text-[9px] px-1.5 py-0.5 rounded font-extrabold uppercase ${
+                                hasSignal.signal === 'Buy' ? 'bg-tv-green/10 text-tv-green' : 'bg-tv-red/10 text-tv-red'
+                              }`}>
+                                {hasSignal.signal}
+                              </span>
+                            )}
+                            <button
+                              onClick={() => handleRemoveFromWatchlist(symbol)}
+                              className="text-tv-muted hover:text-tv-red p-1 rounded hover:bg-tv-border/40 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {watchlist.length === 0 && (
+                      <div className="p-8 text-center text-xs text-tv-muted italic">
+                        No stocks in watchlist. Add one above.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="space-y-4">
+                <div className="text-[10px] text-tv-muted font-bold uppercase tracking-wider mb-2">Overlay Indicators</div>
+                
+                <div className="space-y-3 bg-[#141824]/40 p-4 rounded-lg border border-tv-border/30">
+                  <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
+                    <input
+                      type="checkbox"
+                      checked={chartSettings.showEma20}
+                      onChange={(e) => setChartSettings(prev => ({ ...prev, showEma20: e.target.checked }))}
+                      className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
+                    />
+                    <span className="flex items-center space-x-2">
+                      <span className="w-3 h-1.5 bg-[#ff9800] rounded-full"></span>
+                      <span className="text-slate-200">Show EMA 20</span>
+                    </span>
+                  </label>
+
+                  <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
+                    <input
+                      type="checkbox"
+                      checked={chartSettings.showEma50}
+                      onChange={(e) => setChartSettings(prev => ({ ...prev, showEma50: e.target.checked }))}
+                      className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
+                    />
+                    <span className="flex items-center space-x-2">
+                      <span className="w-3 h-1.5 bg-[#2196f3] rounded-full"></span>
+                      <span className="text-slate-200">Show EMA 50</span>
+                    </span>
+                  </label>
+
+                  <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
+                    <input
+                      type="checkbox"
+                      checked={chartSettings.showEma200}
+                      onChange={(e) => setChartSettings(prev => ({ ...prev, showEma200: e.target.checked }))}
+                      className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
+                    />
+                    <span className="flex items-center space-x-2">
+                      <span className="w-3 h-1.5 bg-[#9c27b0] rounded-full"></span>
+                      <span className="text-slate-200">Show EMA 200</span>
+                    </span>
+                  </label>
+
+                  <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
+                    <input
+                      type="checkbox"
+                      checked={chartSettings.showVolume}
+                      onChange={(e) => setChartSettings(prev => ({ ...prev, showVolume: e.target.checked }))}
+                      className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
+                    />
+                    <span className="text-slate-200">Show Volume Histogram</span>
+                  </label>
+                </div>
+
+                <div className="text-[10px] text-tv-muted font-bold uppercase tracking-wider mb-2">Geometric Pattern Layers</div>
+
+                <div className="space-y-3 bg-[#141824]/40 p-4 rounded-lg border border-tv-border/30">
+                  <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
+                    <input
+                      type="checkbox"
+                      checked={chartSettings.showHSOutline}
+                      onChange={(e) => setChartSettings(prev => ({ ...prev, showHSOutline: e.target.checked }))}
+                      className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
+                    />
+                    <span className="flex items-center space-x-2">
+                      <span className="w-3 h-1.5 bg-yellow-400 rounded-full"></span>
+                      <span className="text-slate-200">Show H&S Outlines</span>
+                    </span>
+                  </label>
+
+                  <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
+                    <input
+                      type="checkbox"
+                      checked={chartSettings.showNeckline}
+                      onChange={(e) => setChartSettings(prev => ({ ...prev, showNeckline: e.target.checked }))}
+                      className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
+                    />
+                    <span className="flex items-center space-x-2">
+                      <span className="w-3 h-1.5 bg-pink-500 rounded-full"></span>
+                      <span className="text-slate-200">Show Necklines</span>
+                    </span>
+                  </label>
+
+                  <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
+                    <input
+                      type="checkbox"
+                      checked={chartSettings.showPatternMarkers}
+                      onChange={(e) => setChartSettings(prev => ({ ...prev, showPatternMarkers: e.target.checked }))}
+                      className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
+                    />
+                    <span className="text-slate-200">Show Pattern Breakout Markers</span>
+                  </label>
+
+                  <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
+                    <input
+                      type="checkbox"
+                      checked={chartSettings.showTradeSetup}
+                      onChange={(e) => setChartSettings(prev => ({ ...prev, showTradeSetup: e.target.checked }))}
+                      className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
+                    />
+                    <span className="text-slate-200">Show Entry/SL/TP order lines</span>
+                  </label>
+
+                  <label className="flex items-center space-x-3 cursor-pointer select-none text-xs">
+                    <input
+                      type="checkbox"
+                      checked={chartSettings.showCandlestickPatterns}
+                      onChange={(e) => setChartSettings(prev => ({ ...prev, showCandlestickPatterns: e.target.checked }))}
+                      className="rounded bg-[#0c0f16] border-tv-border text-tv-green focus:ring-0 focus:ring-offset-0"
+                    />
+                    <span className="text-slate-200">Show Candlestick Patterns</span>
+                  </label>
+                </div>
+
+                {/* Reset All Settings Button */}
+                <div className="pt-4 border-t border-tv-border/30">
+                  <button
+                    onClick={handleResetAll}
+                    className="w-full flex items-center justify-center space-x-2 py-2 rounded bg-tv-red/10 border border-tv-red/20 text-tv-red hover:bg-tv-red hover:text-white font-semibold text-xs transition-all shadow-md"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Reset Settings & Drawings</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          </aside>
+        )}
       </div>
     </div>
   );

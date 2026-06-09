@@ -18,6 +18,18 @@ async def lifespan(app: FastAPI):
     logger.info("Starting up FastAPI application...")
     db_instance.connect_db()
     
+    # Clean up stale ticker_analysis documents that don't have an 'interval' field
+    # (created by older batch scan logic before composite keys were introduced)
+    if db_instance.db is not None:
+        try:
+            result = await db_instance.db.ticker_analysis.delete_many(
+                {"interval": {"$exists": False}}
+            )
+            if result.deleted_count > 0:
+                logger.info(f"Cleaned up {result.deleted_count} stale ticker_analysis documents (missing 'interval' field).")
+        except Exception as e:
+            logger.warning(f"Failed to clean stale documents: {e}")
+    
     yield
     
     # Shutdown actions

@@ -19,18 +19,27 @@ sem = asyncio.Semaphore(RATE_LIMIT_SEMAPHORE_LIMIT)
     retry=retry_if_exception_type(Exception),
     reraise=True
 )
-def fetch_ticker_data_sync(ticker: str) -> pd.DataFrame:
+def fetch_ticker_data_sync(ticker: str, interval: str = "1d") -> pd.DataFrame:
     """
     Synchronous yfinance data retrieval wrapped in retry block.
     """
-    logger.info(f"Fetching data for {ticker} from yfinance...")
+    logger.info(f"Fetching data for {ticker} from yfinance with interval {interval}...")
     t = yf.Ticker(ticker)
-    df = t.history(period="1y", interval="1d")
+    
+    period_map = {
+        "1d": "1y",
+        "1h": "730d",
+        "15m": "60d",
+        "5m": "60d"
+    }
+    period = period_map.get(interval, "1y")
+    
+    df = t.history(period=period, interval=interval)
     if df.empty:
-        raise ValueError(f"No historical data found for {ticker}")
+        raise ValueError(f"No historical data found for {ticker} (interval: {interval})")
     return df
 
-async def fetch_and_analyze(ticker: str) -> dict:
+async def fetch_and_analyze(ticker: str, interval: str = "1d") -> dict:
     """
     Acquires semaphore, fetches data, runs quantitative analysis, and returns result.
     """
@@ -41,10 +50,10 @@ async def fetch_and_analyze(ticker: str) -> dict:
         loop = asyncio.get_running_loop()
         try:
             # Run blocking yfinance fetch in thread pool
-            df = await loop.run_in_executor(None, fetch_ticker_data_sync, ticker)
+            df = await loop.run_in_executor(None, fetch_ticker_data_sync, ticker, interval)
             
             # Analyze historical data
-            result = analyze_ticker(df, ticker)
+            result = analyze_ticker(df, ticker, interval)
             return result
         except Exception as e:
             logger.error(f"Error fetching/analyzing {ticker}: {str(e)}")
@@ -77,9 +86,10 @@ async def run_batch_scan(tickers: list) -> dict:
             failed_tickers.append({"ticker": ticker, "error": str(res)})
         else:
             successful_tickers.append(ticker)
-            # Save or update in MongoDB
+            # Save or update in MongoDB (keyed by ticker + interval)
             analysis_doc = {
                 "ticker": res["ticker"],
+                "interval": "1d",
                 "current_price": res["current_price"],
                 "history": res["history"],
                 "hs_pattern": res["hs_pattern"],
@@ -88,7 +98,7 @@ async def run_batch_scan(tickers: list) -> dict:
             }
             try:
                 await db.ticker_analysis.update_one(
-                    {"ticker": res["ticker"]},
+                    {"ticker": res["ticker"], "interval": "1d"},
                     {"$set": analysis_doc},
                     upsert=True
                 )

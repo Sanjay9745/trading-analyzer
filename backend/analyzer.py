@@ -242,7 +242,7 @@ def detect_head_and_shoulders(df: pd.DataFrame) -> dict:
                             
     return None
 
-def analyze_ticker(df: pd.DataFrame, ticker: str) -> dict:
+def analyze_ticker(df: pd.DataFrame, ticker: str, interval: str = "1d") -> dict:
     """
     Performs full analysis on the dataframe.
     Combines indicators, candlestick patterns, and H&S detection.
@@ -341,9 +341,12 @@ def analyze_ticker(df: pd.DataFrame, ticker: str) -> dict:
                 break
                 
         ts = df_ind.index[i]
-        time_str = ts.strftime("%Y-%m-%d") if hasattr(ts, 'strftime') else str(ts)[:10]
+        if interval == "1d":
+            time_val = ts.strftime("%Y-%m-%d") if hasattr(ts, 'strftime') else str(ts)[:10]
+        else:
+            time_val = int(ts.timestamp()) if hasattr(ts, 'timestamp') else int(ts)
         history_bars.append({
-            "time": time_str,
+            "time": time_val,
             "open": float(df_ind['Open'].iloc[i]),
             "high": float(df_ind['High'].iloc[i]),
             "low": float(df_ind['Low'].iloc[i]),

@@ -1,5 +1,5 @@
 import React from 'react';
-import { TrendingUp, TrendingDown, Clock, Activity, Terminal, CheckCircle2, AlertTriangle, ShieldAlert } from 'lucide-react';
+import { TrendingUp, TrendingDown, Clock, Terminal } from 'lucide-react';
 
 interface TradeReport {
   signal: 'Buy' | 'Sell';
@@ -52,8 +52,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
         <div className="px-6 py-3 border-b border-tv-border/40 flex justify-between items-center bg-[#141824] shrink-0">
           <div>
             <h2 className="text-xs font-extrabold tracking-widest text-white uppercase flex items-center space-x-2">
-              <span className="h-2 w-2 rounded-full bg-tv-green animate-pulse"></span>
+              <span className={`h-2 w-2 rounded-full ${isScanning ? 'bg-yellow-400 animate-pulse' : 'bg-tv-green animate-pulse'}`}></span>
               <span>Algorithmic Signal Matrix</span>
+              {isScanning && (
+                <span className="text-[9px] bg-yellow-400/10 text-yellow-400 border border-yellow-400/20 px-1.5 py-0.5 rounded font-bold ml-2 animate-pulse">
+                  Scanning...
+                </span>
+              )}
             </h2>
             <p className="text-[10px] text-tv-muted">
               Live quantitative breakout setups sorted by winning conviction percentage
