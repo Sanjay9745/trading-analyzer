@@ -25,6 +25,8 @@ export function SignalMatrix({ apiBase, authToken, onSelectTicker, onNavigateToT
   const [selectedExchange, setSelectedExchange] = useState('ALL');
   const [selectedSignal, setSelectedSignal] = useState('ALL'); // ALL, Buy, Sell, NONE
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 25;
 
   const fetchMatrixData = async () => {
     setLoading(true);
@@ -53,21 +55,37 @@ export function SignalMatrix({ apiBase, authToken, onSelectTicker, onNavigateToT
     fetchMatrixData();
   }, [apiBase, authToken]);
 
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, selectedExchange, selectedSignal]);
+
   const handleRowClick = (symbol: string) => {
     onSelectTicker(symbol);
     onNavigateToTrading();
   };
 
   const getExchange = (symbol: string): string => {
-    if (symbol.endsWith('.NS')) return 'NSE';
-    if (symbol.endsWith('.BO')) return 'BSE';
+    const sym = symbol.toUpperCase();
+    if (sym.endsWith('.NS')) return 'NSE';
+    if (sym.endsWith('.BO')) return 'BSE';
     return 'US';
   };
 
   // Filter logic
   const filteredData = data.filter(item => {
-    const symbolMatches = item.ticker.toLowerCase().includes(searchQuery.toLowerCase().trim());
+    const query = searchQuery.toLowerCase().trim();
+    const symbolMatches = item.ticker.toLowerCase().includes(query);
     
+    // Also support searching by pattern shape or signal
+    const patternType = item.hs_pattern?.type || '';
+    const patternLabel = patternType === 'head_and_shoulders' ? 'head and shoulders' : patternType === 'inverse_head_and_shoulders' ? 'inverse head and shoulders' : '';
+    const patternMatches = patternLabel.includes(query);
+    
+    const signal = item.trade_report?.signal || '';
+    const signalMatches = signal.toLowerCase().includes(query);
+
+    const matchesSearch = symbolMatches || patternMatches || signalMatches;
+
     // Exchange filter
     const exch = getExchange(item.ticker);
     if (selectedExchange !== 'ALL' && exch !== selectedExchange) {
@@ -75,14 +93,21 @@ export function SignalMatrix({ apiBase, authToken, onSelectTicker, onNavigateToT
     }
     
     // Signal filter
-    const signal = item.trade_report?.signal || 'NONE';
+    const signalVal = item.trade_report?.signal || 'NONE';
     if (selectedSignal !== 'ALL') {
-      if (selectedSignal === 'ACTIVE' && signal === 'NONE') return false;
-      if (selectedSignal !== 'ACTIVE' && signal.toUpperCase() !== selectedSignal.toUpperCase()) return false;
+      if (selectedSignal === 'ACTIVE' && signalVal === 'NONE') return false;
+      if (selectedSignal !== 'ACTIVE' && signalVal.toUpperCase() !== selectedSignal.toUpperCase()) return false;
     }
 
-    return symbolMatches;
+    return matchesSearch;
   });
+
+  // Pagination Logic
+  const totalPages = Math.ceil(filteredData.length / itemsPerPage);
+  const paginatedData = filteredData.slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage
+  );
 
   const getExchangeBadgeStyle = (exchange: string) => {
     switch (exchange) {
@@ -221,7 +246,7 @@ export function SignalMatrix({ apiBase, authToken, onSelectTicker, onNavigateToT
                 </tr>
               </thead>
               <tbody className="divide-y divide-tv-border/40 text-xs font-semibold text-slate-200">
-                {filteredData.map((item) => {
+                {paginatedData.map((item) => {
                   const exchange = getExchange(item.ticker);
                   const isBuy = item.trade_report?.signal === 'Buy';
                   const isSell = item.trade_report?.signal === 'Sell';
@@ -313,6 +338,64 @@ export function SignalMatrix({ apiBase, authToken, onSelectTicker, onNavigateToT
               </tbody>
             </table>
           </div>
+          
+          {/* Pagination Controls */}
+          {totalPages > 1 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between bg-[#141824]/40 border-t border-tv-border/30 px-6 py-4 gap-4 shrink-0">
+              <div className="text-xs text-tv-muted font-bold uppercase tracking-wider">
+                Showing <span className="text-white">{(currentPage - 1) * itemsPerPage + 1}</span> to{' '}
+                <span className="text-white">
+                  {Math.min(currentPage * itemsPerPage, filteredData.length)}
+                </span>{' '}
+                of <span className="text-tv-green">{filteredData.length}</span> results
+              </div>
+
+              <div className="flex items-center space-x-1.5">
+                <button
+                  onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                  disabled={currentPage === 1}
+                  className="px-3 py-1.5 rounded-lg text-[10px] font-bold bg-[#0c0f16] border border-tv-border text-tv-text hover:text-white disabled:opacity-30 disabled:hover:text-tv-text transition-all cursor-pointer disabled:cursor-not-allowed uppercase tracking-wider"
+                >
+                  Previous
+                </button>
+
+                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                  let pageNum = currentPage;
+                  if (currentPage <= 3) {
+                    pageNum = i + 1;
+                  } else if (currentPage >= totalPages - 2) {
+                    pageNum = totalPages - 4 + i;
+                  } else {
+                    pageNum = currentPage - 2 + i;
+                  }
+
+                  if (pageNum < 1 || pageNum > totalPages) return null;
+
+                  return (
+                    <button
+                      key={pageNum}
+                      onClick={() => setCurrentPage(pageNum)}
+                      className={`w-8 h-8 rounded-lg text-xs font-bold transition-all ${
+                        currentPage === pageNum
+                          ? 'bg-tv-green text-white shadow-md shadow-tv-green/20'
+                          : 'bg-[#0c0f16] border border-tv-border text-tv-muted hover:text-white hover:border-tv-muted'
+                      }`}
+                    >
+                      {pageNum}
+                    </button>
+                  );
+                })}
+
+                <button
+                  onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                  disabled={currentPage === totalPages}
+                  className="px-3 py-1.5 rounded-lg text-[10px] font-bold bg-[#0c0f16] border border-tv-border text-tv-text hover:text-white disabled:opacity-30 disabled:hover:text-tv-text transition-all cursor-pointer disabled:cursor-not-allowed uppercase tracking-wider"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <div className="flex-grow flex flex-col items-center justify-center py-20 text-center">

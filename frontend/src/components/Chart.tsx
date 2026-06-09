@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createChart, ColorType, CandlestickSeries, LineSeries, HistogramSeries, BarSeries, AreaSeries, createSeriesMarkers } from 'lightweight-charts';
 import type { SeriesMarker } from 'lightweight-charts';
 import { MousePointer, TrendingUp, BarChart2, Trash2, HelpCircle, PenTool, Type, Activity } from 'lucide-react';
+import { getCurrencySymbol } from '../utils/currency';
 
 interface ChartBar {
   time: string;
@@ -130,6 +131,7 @@ export const Chart: React.FC<ChartProps> = ({
   chartType,
   setChartType,
 }) => {
+  const cs = getCurrencySymbol(ticker);
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
   const candSeriesRef = useRef<any>(null);
@@ -485,11 +487,18 @@ export const Chart: React.FC<ChartProps> = ({
 
     // Default zoom to focus on the latest 60 bars of price data
     if (history.length > 0) {
-      const displayRange = Math.min(60, history.length);
-      chart.timeScale().setVisibleLogicalRange({
-        from: history.length - displayRange,
-        to: history.length + 3, // slightly offsets from the right edge for trading margin space
-      });
+      setTimeout(() => {
+        if (chartRef.current && history.length > 0) {
+          const displayRange = Math.min(60, history.length);
+          const start = history[history.length - displayRange].time;
+          const end = history[history.length - 1].time;
+          try {
+            chartRef.current.timeScale().setVisibleRange({ from: start, to: end });
+          } catch (err) {
+            chartRef.current.timeScale().fitContent();
+          }
+        }
+      }, 50);
     } else {
       chart.timeScale().fitContent();
     }
@@ -599,15 +608,15 @@ export const Chart: React.FC<ChartProps> = ({
     if (tradeReport && settings.showTradeSetup) {
       const entry = candSeriesRef.current.createPriceLine({
         price: tradeReport.entry, color: '#3b82f6', lineWidth: 1.5, lineStyle: 1, axisLabelVisible: true,
-        title: `ENTRY: $${tradeReport.entry.toFixed(2)}`,
+        title: `ENTRY: ${cs}${tradeReport.entry.toFixed(2)}`,
       });
       const tp = candSeriesRef.current.createPriceLine({
         price: tradeReport.take_profit, color: '#10b981', lineWidth: 1.5, lineStyle: 2, axisLabelVisible: true,
-        title: `TARGET (TP): $${tradeReport.take_profit.toFixed(2)}`,
+        title: `TARGET (TP): ${cs}${tradeReport.take_profit.toFixed(2)}`,
       });
       const sl = candSeriesRef.current.createPriceLine({
         price: tradeReport.stop_loss, color: '#ef4444', lineWidth: 1.5, lineStyle: 2, axisLabelVisible: true,
-        title: `STOP LOSS (SL): $${tradeReport.stop_loss.toFixed(2)}`,
+        title: `STOP LOSS (SL): ${cs}${tradeReport.stop_loss.toFixed(2)}`,
       });
       orderLinesRef.current = [entry, tp, sl];
     }
@@ -615,7 +624,7 @@ export const Chart: React.FC<ChartProps> = ({
     if (mockExecutionPrice) {
       const exec = candSeriesRef.current.createPriceLine({
         price: mockExecutionPrice, color: '#eab308', lineWidth: 2, lineStyle: 0, axisLabelVisible: true,
-        title: `MOCK EXECUTION: $${mockExecutionPrice.toFixed(2)}`,
+        title: `MOCK EXECUTION: ${cs}${mockExecutionPrice.toFixed(2)}`,
       });
       orderLinesRef.current.push(exec);
     }
@@ -682,7 +691,7 @@ export const Chart: React.FC<ChartProps> = ({
 
       ctx.fillStyle = isHovered || isDragged ? '#f97316' : '#3b82f6';
       ctx.font = 'bold 10px sans-serif';
-      ctx.fillText(`$${line.price.toFixed(2)}`, 10, y - 5);
+      ctx.fillText(`${cs}${line.price.toFixed(2)}`, 10, y - 5);
     });
 
     // 2. Trend lines
@@ -754,7 +763,7 @@ export const Chart: React.FC<ChartProps> = ({
 
         ctx.fillStyle = isHovered || isDragged ? '#f97316' : (level === 0.618 || level === 0.5 ? '#10b981' : '#94a3b8');
         ctx.font = '10px sans-serif';
-        const label = `Fib ${(level * 100).toFixed(1)}% ($${lvlPrice.toFixed(2)})`;
+        const label = `Fib ${(level * 100).toFixed(1)}% (${cs}${lvlPrice.toFixed(2)})`;
         ctx.fillText(label, Math.min(start.x, end.x) + 6, y - 4);
       });
 
