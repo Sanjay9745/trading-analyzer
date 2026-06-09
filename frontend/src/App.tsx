@@ -2,9 +2,13 @@ import { useState, useEffect, useRef } from 'react';
 import { Chart } from './components/Chart';
 import { Dashboard } from './components/Dashboard';
 import { StockBrowser } from './components/StockBrowser';
+import { AuthPage } from './components/AuthPage';
+import { SignalMatrix } from './components/SignalMatrix';
+import { PriorityTrades } from './components/PriorityTrades';
 import { 
   Radio, Activity, AlertTriangle, Play, Plus, Trash2, 
-  Settings, Move, Terminal, PlusCircle, RefreshCw, PenTool 
+  Settings, Move, Terminal, PlusCircle, RefreshCw, PenTool,
+  LogOut
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
@@ -29,7 +33,7 @@ interface MockTrade {
 }
 
 function App() {
-  const [activePage, setActivePage] = useState<'trading' | 'stockbrowser'>('trading');
+  const [activePage, setActivePage] = useState<'trading' | 'stockbrowser' | 'signalmatrix' | 'priority'>('trading');
   const [watchlist, setWatchlist] = useState<string[]>([]);
   const [reports, setReports] = useState<any[]>([]);
   const [selectedTicker, setSelectedTicker] = useState<string>('AAPL');
@@ -38,6 +42,10 @@ function App() {
   const [activeHSPattern, setActiveHSPattern] = useState<any | null>(null);
   const [activeTradeReport, setActiveTradeReport] = useState<any | null>(null);
   
+  // User Authentication State
+  const [authToken, setAuthToken] = useState<string | null>(localStorage.getItem('session_token'));
+  const [userEmail, setUserEmail] = useState<string | null>(localStorage.getItem('user_email'));
+
   // UI & Panel Visibility States
   const [isScanning, setIsScanning] = useState(false);
   const [loadingChart, setLoadingChart] = useState(false);
@@ -156,18 +164,50 @@ function App() {
     };
   }, [isDragging]);
 
-  // Fetch Watchlist on Mount
+  // User Login & Logout handlers
+  const handleLoginSuccess = (token: string, email: string) => {
+    setAuthToken(token);
+    setUserEmail(email);
+    localStorage.setItem('session_token', token);
+    localStorage.setItem('user_email', email);
+    addLog(`[AUTH] User ${email} logged in successfully.`);
+  };
+
+  const handleLogout = async () => {
+    if (authToken) {
+      try {
+        await fetch(`${API_BASE}/api/auth/logout`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${authToken}`
+          }
+        });
+      } catch (e) {
+        console.error('Logout request failed:', e);
+      }
+    }
+    setAuthToken(null);
+    setUserEmail(null);
+    localStorage.removeItem('session_token');
+    localStorage.removeItem('user_email');
+    setWatchlist([]);
+    addLog('[AUTH] User logged out.');
+  };
+
+  // Fetch Watchlist & Reports whenever authToken changes
   useEffect(() => {
-    fetchWatchlist();
-    fetchReports();
-  }, []);
+    if (authToken) {
+      fetchWatchlist();
+      fetchReports();
+    }
+  }, [authToken]);
 
   // Load chart data whenever selectedTicker or intervalState changes
   useEffect(() => {
-    if (selectedTicker) {
+    if (selectedTicker && authToken) {
       loadTickerData(selectedTicker);
     }
-  }, [selectedTicker, intervalState]);
+  }, [selectedTicker, intervalState, authToken]);
 
   const addLog = (message: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -175,8 +215,13 @@ function App() {
   };
 
   const fetchWatchlist = async () => {
+    if (!authToken) return;
     try {
-      const res = await fetch(`${API_BASE}/api/watchlist`);
+      const res = await fetch(`${API_BASE}/api/watchlist`, {
+        headers: {
+          'Authorization': `Bearer ${authToken}`
+        }
+      });
       if (res.ok) {
         const data = await res.json();
         const uniqueData = Array.from(new Set(data as string[]));
@@ -193,8 +238,13 @@ function App() {
   };
 
   const fetchReports = async () => {
+    if (!authToken) return;
     try {
-      const res = await fetch(`${API_BASE}/api/scanner/report`);
+      const res = await fetch(`${API_BASE}/api/scanner/report`, {
+        headers: {
+          'Authorization': `Bearer ${authToken}`
+        }
+      });
       if (res.ok) {
         const data = await res.json();
         // Deduplicate by ticker (keep the first occurrence, which is already sorted by backend)
@@ -229,11 +279,16 @@ function App() {
   };
 
   const loadTickerData = async (ticker: string) => {
+    if (!authToken) return;
     setLoadingChart(true);
     setErrorMessage(null);
     setLivePrice(null);
     
     addLog(`[FETCH] Loading historical candles for ${ticker}...`);
+
+    const headers = {
+      'Authorization': `Bearer ${authToken}`
+    };
 
     if (ticker.includes('/')) {
       const [tickerA, tickerB] = ticker.split('/');
@@ -241,8 +296,8 @@ function App() {
 
       try {
         const [resA, resB] = await Promise.all([
-          fetch(`${API_BASE}/api/ticker/${tickerA}?interval=${intervalState}`),
-          fetch(`${API_BASE}/api/ticker/${tickerB}?interval=${intervalState}`)
+          fetch(`${API_BASE}/api/ticker/${tickerA}?interval=${intervalState}`, { headers }),
+          fetch(`${API_BASE}/api/ticker/${tickerB}?interval=${intervalState}`, { headers })
         ]);
 
         if (!resA.ok || !resB.ok) {
@@ -299,7 +354,7 @@ function App() {
       }
     } else {
       try {
-        const res = await fetch(`${API_BASE}/api/ticker/${ticker}?interval=${intervalState}`);
+        const res = await fetch(`${API_BASE}/api/ticker/${ticker}?interval=${intervalState}`, { headers });
         if (res.ok) {
           const data = await res.json();
           setActiveHistory(data.history);
@@ -327,6 +382,7 @@ function App() {
   };
 
   const handleTriggerScan = async () => {
+    if (!authToken) return;
     setIsScanning(true);
     setErrorMessage(null);
     addLog('[SCAN] Initiating multi-threaded quantitative scanner job in background...');
@@ -334,7 +390,10 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/api/scanner/run`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`
+        },
         body: JSON.stringify({ tickers: watchlist }),
       });
       if (res.ok) {
@@ -366,6 +425,7 @@ function App() {
   };
 
   const handleAddToWatchlist = async (tickerName: string) => {
+    if (!authToken) return;
     const cleanTicker = tickerName.trim().toUpperCase();
     if (!cleanTicker) return;
 
@@ -373,7 +433,10 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/api/watchlist`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`
+        },
         body: JSON.stringify({ ticker: cleanTicker }),
       });
       if (res.ok) {
@@ -406,6 +469,7 @@ function App() {
   };
 
   const handleRemoveFromWatchlist = async (tickerName: string) => {
+    if (!authToken) return;
     addLog(`[WATCHLIST] Removing ${tickerName}...`);
     if (tickerName.includes('/')) {
       const newWl = watchlist.filter(w => w !== tickerName);
@@ -420,6 +484,9 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/api/watchlist/${tickerName}`, {
         method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${authToken}`
+        }
       });
       if (res.ok) {
         const data = await res.json();
@@ -474,6 +541,10 @@ function App() {
     setLivePrice(price);
   };
 
+  if (!authToken) {
+    return <AuthPage apiBase={API_BASE} onLoginSuccess={handleLoginSuccess} />;
+  }
+
   return (
     <div className="flex flex-col h-screen w-screen bg-[#0c0f16] text-[#d1d4dc] font-sans overflow-hidden">
       
@@ -498,7 +569,7 @@ function App() {
         <div className="flex items-center space-x-1 bg-[#0c0f16]/60 p-1 rounded-lg border border-tv-border/40">
           <button
             onClick={() => setActivePage('trading')}
-            className={`px-4 py-1.5 text-xs rounded font-bold uppercase transition-all ${
+            className={`px-3 py-1.5 text-xs rounded font-bold uppercase transition-all ${
               activePage === 'trading'
                 ? 'bg-tv-green text-white shadow-md'
                 : 'text-tv-muted hover:text-white hover:bg-tv-border/25'
@@ -508,7 +579,7 @@ function App() {
           </button>
           <button
             onClick={() => setActivePage('stockbrowser')}
-            className={`px-4 py-1.5 text-xs rounded font-bold uppercase transition-all ${
+            className={`px-3 py-1.5 text-xs rounded font-bold uppercase transition-all ${
               activePage === 'stockbrowser'
                 ? 'bg-tv-green text-white shadow-md'
                 : 'text-tv-muted hover:text-white hover:bg-tv-border/25'
@@ -516,11 +587,43 @@ function App() {
           >
             Stock Directory
           </button>
+          <button
+            onClick={() => setActivePage('signalmatrix')}
+            className={`px-3 py-1.5 text-xs rounded font-bold uppercase transition-all ${
+              activePage === 'signalmatrix'
+                ? 'bg-tv-green text-white shadow-md'
+                : 'text-tv-muted hover:text-white hover:bg-tv-border/25'
+            }`}
+          >
+            Signal Matrix
+          </button>
+          <button
+            onClick={() => setActivePage('priority')}
+            className={`px-3 py-1.5 text-xs rounded font-bold uppercase transition-all ${
+              activePage === 'priority'
+                ? 'bg-tv-green text-white shadow-md'
+                : 'text-tv-muted hover:text-white hover:bg-tv-border/25'
+            }`}
+          >
+            Priority Setups
+          </button>
         </div>
 
         {/* Global Toolbar Controllers & Toggle switches */}
         <div className="flex items-center space-x-4">
           
+          {/* User Profile Info & Logout */}
+          <div className="flex items-center space-x-2 bg-[#0c0f16]/85 px-3 py-1.5 rounded-lg border border-tv-border/50 shadow">
+            <span className="text-[10px] text-slate-300 font-bold uppercase truncate max-w-[120px]">{userEmail}</span>
+            <button
+              onClick={handleLogout}
+              title="Logout Session"
+              className="p-1 rounded text-tv-muted hover:text-tv-red hover:bg-tv-red/10 transition-colors"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
           {/* Panel Visibility Toggles */}
           <div className="flex items-center space-x-1.5 bg-[#0c0f16]/60 p-1.5 rounded-lg border border-tv-border/40">
             <span className="text-[9px] text-tv-muted font-bold uppercase tracking-wider px-1">Panels:</span>
@@ -610,6 +713,21 @@ function App() {
           watchlist={watchlist}
           onAddToWatchlist={handleAddToWatchlist}
           onRemoveFromWatchlist={handleRemoveFromWatchlist}
+          onSelectTicker={setSelectedTicker}
+          onNavigateToTrading={() => setActivePage('trading')}
+          apiBase={API_BASE}
+        />
+      ) : activePage === 'signalmatrix' ? (
+        <SignalMatrix
+          apiBase={API_BASE}
+          authToken={authToken || ''}
+          onSelectTicker={setSelectedTicker}
+          onNavigateToTrading={() => setActivePage('trading')}
+        />
+      ) : activePage === 'priority' ? (
+        <PriorityTrades
+          apiBase={API_BASE}
+          authToken={authToken || ''}
           onSelectTicker={setSelectedTicker}
           onNavigateToTrading={() => setActivePage('trading')}
         />

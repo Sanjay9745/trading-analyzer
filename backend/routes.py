@@ -1,11 +1,12 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect, Request, Depends
 from pydantic import BaseModel
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from db import db_instance
 from worker import run_batch_scan, fetch_and_analyze
-from config import DEFAULT_TICKERS
+from config import DEFAULT_TICKERS, SESSION_LIFETIME_DAYS
 from stock_catalog import STOCK_CATALOG
+from auth import hash_password, verify_password, generate_token, get_current_user
 import logging
 
 logger = logging.getLogger(__name__)
@@ -157,20 +158,119 @@ async def get_ticker_history(symbol: str, interval: str = "1d"):
         "last_updated": doc.get("last_updated").isoformat() if isinstance(doc.get("last_updated"), datetime) else str(doc.get("last_updated"))
     }
 
+# --- AUTHENTICATION SCHEMAS & ROUTES ---
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+@router.post("/auth/register")
+async def register(payload: RegisterRequest):
+    db = db_instance.db
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database not initialized")
+    
+    email = payload.email.lower().strip()
+    password = payload.password
+    
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password are required")
+        
+    # Check if user already exists
+    existing_user = await db.users.find_one({"email": email})
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+        
+    hashed, salt = hash_password(password)
+    
+    user_doc = {
+        "email": email,
+        "hashed_password": hashed,
+        "salt": salt,
+        "created_at": datetime.utcnow()
+    }
+    
+    try:
+        await db.users.insert_one(user_doc)
+        # Create initial default watchlist for user
+        await db.watchlist.insert_one({"user_email": email, "tickers": DEFAULT_TICKERS})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create user: {str(e)}")
+        
+    return {"message": "User registered successfully"}
+
+@router.post("/auth/login")
+async def login(payload: LoginRequest):
+    db = db_instance.db
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database not initialized")
+        
+    email = payload.email.lower().strip()
+    password = payload.password
+    
+    user = await db.users.find_one({"email": email})
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid email or password")
+        
+    if not verify_password(password, user["salt"], user["hashed_password"]):
+        raise HTTPException(status_code=400, detail="Invalid email or password")
+        
+    token = generate_token()
+    expires_at = datetime.utcnow() + timedelta(days=SESSION_LIFETIME_DAYS)
+    
+    session_doc = {
+        "token": token,
+        "email": email,
+        "expires_at": expires_at,
+        "created_at": datetime.utcnow()
+    }
+    
+    await db.sessions.insert_one(session_doc)
+    
+    return {"token": token, "email": email}
+
+@router.post("/auth/logout")
+async def logout(request: Request):
+    auth_header = request.headers.get("Authorization")
+    token = None
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+    else:
+        token = request.headers.get("x-session-token")
+        
+    if token:
+        db = db_instance.db
+        if db is not None:
+            await db.sessions.delete_one({"token": token})
+            
+    return {"message": "Logged out successfully"}
+
+@router.get("/auth/me")
+async def get_me(current_user: dict = Depends(get_current_user)):
+    return {"email": current_user["email"]}
+
+
+# --- PERSISTENT USER-SPECIFIC WATCHLISTS ---
+
 @router.get("/watchlist")
-async def get_watchlist():
+async def get_watchlist(current_user: dict = Depends(get_current_user)):
     """
-    Fetches watchlist. Falls back to default list if not created yet.
+    Fetches watchlist uniquely associated with the logged-in user.
     """
     db = db_instance.db
     if db is None:
         raise HTTPException(status_code=500, detail="Database not initialized")
         
-    wl_doc = await db.watchlist.find_one({"id": "user_default"})
+    email = current_user["email"]
+    wl_doc = await db.watchlist.find_one({"user_email": email})
     if not wl_doc:
-        # Create default
+        # Create user's default watchlist if none exists
         await db.watchlist.update_one(
-            {"id": "user_default"},
+            {"user_email": email},
             {"$set": {"tickers": DEFAULT_TICKERS}},
             upsert=True
         )
@@ -179,9 +279,9 @@ async def get_watchlist():
     return wl_doc.get("tickers", [])
 
 @router.post("/watchlist")
-async def add_to_watchlist(payload: WatchlistRequest):
+async def add_to_watchlist(payload: WatchlistRequest, current_user: dict = Depends(get_current_user)):
     """
-    Appends a new ticker symbol to the user watchlist.
+    Appends a new ticker symbol to the user's private watchlist.
     """
     db = db_instance.db
     if db is None:
@@ -191,14 +291,14 @@ async def add_to_watchlist(payload: WatchlistRequest):
     if not symbol:
         raise HTTPException(status_code=400, detail="Ticker symbol cannot be empty")
         
-    # Check if watchlist doc exists
-    wl_doc = await db.watchlist.find_one({"id": "user_default"})
+    email = current_user["email"]
+    wl_doc = await db.watchlist.find_one({"user_email": email})
     tickers = wl_doc.get("tickers", []) if wl_doc else DEFAULT_TICKERS.copy()
     
     if symbol not in tickers:
         tickers.append(symbol)
         await db.watchlist.update_one(
-            {"id": "user_default"},
+            {"user_email": email},
             {"$set": {"tickers": tickers}},
             upsert=True
         )
@@ -206,27 +306,80 @@ async def add_to_watchlist(payload: WatchlistRequest):
     return {"watchlist": tickers}
 
 @router.delete("/watchlist/{symbol}")
-async def remove_from_watchlist(symbol: str):
+async def remove_from_watchlist(symbol: str, current_user: dict = Depends(get_current_user)):
     """
-    Removes a ticker symbol from the user watchlist.
+    Removes a ticker symbol from the user's private watchlist.
     """
     db = db_instance.db
     if db is None:
         raise HTTPException(status_code=500, detail="Database not initialized")
         
     sym = symbol.upper().strip()
-    wl_doc = await db.watchlist.find_one({"id": "user_default"})
+    email = current_user["email"]
+    wl_doc = await db.watchlist.find_one({"user_email": email})
     tickers = wl_doc.get("tickers", []) if wl_doc else DEFAULT_TICKERS.copy()
     
     if sym in tickers:
         tickers.remove(sym)
         await db.watchlist.update_one(
-            {"id": "user_default"},
+            {"user_email": email},
             {"$set": {"tickers": tickers}},
             upsert=True
         )
         
     return {"watchlist": tickers}
+
+
+# --- QUANT DASHBOARD ENDPOINTS ---
+
+@router.get("/scanner/signal-matrix")
+async def get_signal_matrix():
+    """
+    Retrieves latest quantitative analysis results for all stocks to display on the Algorithmic Signal Matrix.
+    """
+    db = db_instance.db
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database not initialized")
+        
+    cursor = db.ticker_analysis.find({})
+    results = []
+    async for doc in cursor:
+        results.append({
+            "ticker": doc.get("ticker"),
+            "interval": doc.get("interval", "1d"),
+            "current_price": doc.get("current_price"),
+            "last_updated": doc.get("last_updated").isoformat() if isinstance(doc.get("last_updated"), datetime) else str(doc.get("last_updated")),
+            "hs_pattern": doc.get("hs_pattern"),
+            "trade_report": doc.get("trade_report")
+        })
+    return results
+
+@router.get("/scanner/priority-trades")
+async def get_priority_trades():
+    """
+    Filters and retrieves tickers showing active patterns with buy/sell triggers to display on Priority Stocks page.
+    """
+    db = db_instance.db
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database not initialized")
+        
+    cursor = db.ticker_analysis.find({"trade_report": {"$ne": None}})
+    results = []
+    async for doc in cursor:
+        results.append({
+            "ticker": doc.get("ticker"),
+            "current_price": doc.get("current_price"),
+            "last_updated": doc.get("last_updated").isoformat() if isinstance(doc.get("last_updated"), datetime) else str(doc.get("last_updated")),
+            "hs_pattern": doc.get("hs_pattern"),
+            "trade_report": doc.get("trade_report")
+        })
+        
+    # Sort by win conviction descending
+    results.sort(key=lambda x: x["trade_report"].get("win_conviction_pct", 0), reverse=True)
+    return results
+
+
+# --- WEBSOCKET REAL-TIME SIMULATOR ---
 
 import asyncio
 import random

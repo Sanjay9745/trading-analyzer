@@ -5,6 +5,13 @@ DATABASE_NAME = "trading_analyzer"
 RATE_LIMIT_SEMAPHORE_LIMIT = 2
 BATCH_DELAY_SECONDS = 0.5
 
+# Authentication & Session configuration
+SESSION_LIFETIME_DAYS = 7
+
+# Scheduler configuration for midnight full scan
+SCHEDULER_BATCH_SIZE = 100
+SCHEDULER_BATCH_DELAY_SECONDS = 300  # 5 minutes in seconds
+
 DEFAULT_TICKERS = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "META",
     "TSLA", "NVDA", "NFLX", "AMD", "INTC",
