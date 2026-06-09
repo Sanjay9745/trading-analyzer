@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background-color: #0c0f16;
+  color: #d1d4dc;
+  font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;
+  overflow: hidden;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0c0f16;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a2e39;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #363a45;
+}
+
+/* Glassmorphism Styles */
+.glass-panel {
+  background: rgba(28, 32, 48, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(42, 46, 57, 0.4);
+}
+
+.glass-panel-light {
+  background: rgba(20, 24, 38, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(42, 46, 57, 0.2);
+}
+
+/* Gradients & Glows */
+.green-glow {
+  box-shadow: 0 0 15px rgba(38, 166, 154, 0.35);
+}
+
+.red-glow {
+  box-shadow: 0 0 15px rgba(239, 83, 80, 0.35);
+}
+
+.gold-glow {
+  box-shadow: 0 0 15px rgba(234, 179, 8, 0.35);
+}
+
+/* Drag Cursor */
+.cursor-grab {
+  cursor: grab;
+}
+
+.cursor-grabbing {
+  cursor: grabbing;
+}
+
+/* Micro-animations */
+@keyframes pulse-border {
+  0%, 100% { border-color: rgba(38, 166, 154, 0.4); }
+  50% { border-color: rgba(38, 166, 154, 0.9); }
+}
+
+.live-border-pulse {
+  animation: pulse-border 2s infinite;
+}
+
+.trade-glow-buy {
+  background: linear-gradient(135deg, rgba(38, 166, 154, 0.15) 0%, rgba(38, 166, 154, 0.02) 100%);
+  border-left: 3px solid #26a69a;
+}
+
+.trade-glow-sell {
+  background: linear-gradient(135deg, rgba(239, 83, 80, 0.15) 0%, rgba(239, 83, 80, 0.02) 100%);
+  border-left: 3px solid #ef5350;
+}
+
