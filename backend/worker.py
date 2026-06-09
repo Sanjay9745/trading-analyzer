@@ -37,6 +37,10 @@ def fetch_ticker_data_sync(ticker: str, interval: str = "1d") -> pd.DataFrame:
     df = t.history(period=period, interval=interval)
     if df.empty:
         raise ValueError(f"No historical data found for {ticker} (interval: {interval})")
+    
+    # Deduplicate and sort index to prevent frontend lightweight-charts duplicate timestamp assertions
+    df = df[~df.index.duplicated(keep='last')]
+    df = df.sort_index()
     return df
 
 async def fetch_and_analyze(ticker: str, interval: str = "1d") -> dict:

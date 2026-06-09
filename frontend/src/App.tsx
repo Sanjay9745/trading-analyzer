@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Chart } from './components/Chart';
 import { Dashboard } from './components/Dashboard';
+import { StockBrowser } from './components/StockBrowser';
 import { 
   Radio, Activity, AlertTriangle, Play, Plus, Trash2, 
   Settings, Move, Terminal, PlusCircle, RefreshCw, PenTool 
@@ -28,10 +29,12 @@ interface MockTrade {
 }
 
 function App() {
+  const [activePage, setActivePage] = useState<'trading' | 'stockbrowser'>('trading');
   const [watchlist, setWatchlist] = useState<string[]>([]);
   const [reports, setReports] = useState<any[]>([]);
   const [selectedTicker, setSelectedTicker] = useState<string>('AAPL');
   const [activeHistory, setActiveHistory] = useState<any[]>([]);
+
   const [activeHSPattern, setActiveHSPattern] = useState<any | null>(null);
   const [activeTradeReport, setActiveTradeReport] = useState<any | null>(null);
   
@@ -491,6 +494,30 @@ function App() {
           </div>
         </div>
 
+        {/* Page Navigation Switcher */}
+        <div className="flex items-center space-x-1 bg-[#0c0f16]/60 p-1 rounded-lg border border-tv-border/40">
+          <button
+            onClick={() => setActivePage('trading')}
+            className={`px-4 py-1.5 text-xs rounded font-bold uppercase transition-all ${
+              activePage === 'trading'
+                ? 'bg-tv-green text-white shadow-md'
+                : 'text-tv-muted hover:text-white hover:bg-tv-border/25'
+            }`}
+          >
+            Trading Terminal
+          </button>
+          <button
+            onClick={() => setActivePage('stockbrowser')}
+            className={`px-4 py-1.5 text-xs rounded font-bold uppercase transition-all ${
+              activePage === 'stockbrowser'
+                ? 'bg-tv-green text-white shadow-md'
+                : 'text-tv-muted hover:text-white hover:bg-tv-border/25'
+            }`}
+          >
+            Stock Directory
+          </button>
+        </div>
+
         {/* Global Toolbar Controllers & Toggle switches */}
         <div className="flex items-center space-x-4">
           
@@ -578,10 +605,19 @@ function App() {
       </header>
 
       {/* 2. Main Work Area (Split Pane) */}
-      <div className="flex flex-grow w-full overflow-hidden">
-        
-        {/* Left main workspace */}
-        <div className="flex flex-col flex-grow h-full overflow-hidden">
+      {activePage === 'stockbrowser' ? (
+        <StockBrowser
+          watchlist={watchlist}
+          onAddToWatchlist={handleAddToWatchlist}
+          onRemoveFromWatchlist={handleRemoveFromWatchlist}
+          onSelectTicker={setSelectedTicker}
+          onNavigateToTrading={() => setActivePage('trading')}
+        />
+      ) : (
+        <div className="flex flex-grow w-full overflow-hidden">
+          
+          {/* Left main workspace */}
+          <div className="flex flex-col flex-grow h-full overflow-hidden">
           
           {/* Top Panel: Chart */}
           <div className="flex-grow w-full relative z-0">
@@ -1039,6 +1075,7 @@ function App() {
           </aside>
         )}
       </div>
+      )}
     </div>
   );
 }

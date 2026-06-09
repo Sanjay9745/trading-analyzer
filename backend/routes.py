@@ -5,10 +5,30 @@ from datetime import datetime
 from db import db_instance
 from worker import run_batch_scan, fetch_and_analyze
 from config import DEFAULT_TICKERS
+from stock_catalog import STOCK_CATALOG
 import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
+
+@router.get("/stocks/search")
+async def search_stocks(q: Optional[str] = None, exchange: Optional[str] = None):
+    """
+    Search/filter the static stock catalog.
+    """
+    results = STOCK_CATALOG
+    if exchange:
+        exch = exchange.upper().strip()
+        if exch != "ALL":
+            results = [s for s in results if s["exchange"].upper() == exch]
+    if q:
+        query = q.lower().strip()
+        results = [
+            s for s in results 
+            if query in s["symbol"].lower() or query in s["name"].lower() or query in s["sector"].lower()
+        ]
+    return results
+
 
 class WatchlistRequest(BaseModel):
     ticker: str
