@@ -89,6 +89,54 @@ html, body, #root {
   border-left: 3px solid #ef5350;
 }
 
+/* Mobile touch optimization */
+@media (max-width: 767px) {
+  button, a, select, input {
+    min-height: 36px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 3px;
+    height: 3px;
+  }
+
+  /* Prevent text zoom on iOS */
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Safe area insets for modern phones (notch/dynamic island) */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .safe-top {
+    padding-top: env(safe-area-inset-top);
+  }
+}
+
+/* Smooth mobile scrolling */
+.mobile-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* Bottom sheet slide-up animation */
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+.slide-up {
+  animation: slideUp 0.25s ease-out;
+}
+
+/* Mobile fab (floating action button) */
+.fab-shadow {
+  box-shadow: 0 4px 20px rgba(38, 166, 154, 0.4);
+}
+
 /* Hide any potential TradingView or chart logos/watermarks */
 div[class*="tv-lightweight-charts"] a,
 div[class*="tv-lightweight-charts"] svg,

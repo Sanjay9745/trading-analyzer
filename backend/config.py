@@ -2,6 +2,8 @@ import os
 
 MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
 DATABASE_NAME = "trading_analyzer"
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+CACHE_EXPIRE_SECONDS = 300
 RATE_LIMIT_SEMAPHORE_LIMIT = 2
 BATCH_DELAY_SECONDS = 0.5
 
@@ -11,6 +13,9 @@ SESSION_LIFETIME_DAYS = 7
 # Scheduler configuration for midnight full scan
 SCHEDULER_BATCH_SIZE = 100
 SCHEDULER_BATCH_DELAY_SECONDS = 300  # 5 minutes in seconds
+
+# Proxy rotation for data fetching (prevents IP blacklisting)
+USE_PROXIES = True
 
 DEFAULT_TICKERS = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "META",

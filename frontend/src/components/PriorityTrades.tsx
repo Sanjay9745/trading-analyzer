@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Loader2, TrendingUp, Sparkles, ArrowUpRight, ArrowDownRight, Compass, ShieldAlert, BadgeDollarSign, ChevronRight } from 'lucide-react';
+import { getCurrencySymbol } from '../utils/currency';
 
 interface PriorityTradesProps {
   apiBase: string;
@@ -107,6 +108,7 @@ export function PriorityTrades({ apiBase, authToken, onSelectTicker, onNavigateT
             const exch = getExchange(item.ticker);
             const riskReward = item.trade_report.risk_reward_ratio;
             const conviction = item.trade_report.win_conviction_pct;
+            const cs = getCurrencySymbol(item.ticker);
 
             return (
               <div
@@ -184,7 +186,7 @@ export function PriorityTrades({ apiBase, authToken, onSelectTicker, onNavigateT
                       <Compass className="w-3.5 h-3.5 text-blue-500" />
                       <span>Target Entry:</span>
                     </span>
-                    <span className="text-white">${item.trade_report.entry.toFixed(2)}</span>
+                    <span className="text-white">{cs}{item.trade_report.entry.toFixed(2)}</span>
                   </div>
 
                   <div className="flex items-center justify-between">
@@ -192,7 +194,7 @@ export function PriorityTrades({ apiBase, authToken, onSelectTicker, onNavigateT
                       <BadgeDollarSign className="w-3.5 h-3.5 text-tv-green" />
                       <span>Take Profit:</span>
                     </span>
-                    <span className="text-tv-green font-extrabold">${item.trade_report.take_profit.toFixed(2)}</span>
+                    <span className="text-tv-green font-extrabold">{cs}{item.trade_report.take_profit.toFixed(2)}</span>
                   </div>
 
                   <div className="flex items-center justify-between">
@@ -200,7 +202,7 @@ export function PriorityTrades({ apiBase, authToken, onSelectTicker, onNavigateT
                       <ShieldAlert className="w-3.5 h-3.5 text-tv-red" />
                       <span>Stop Loss:</span>
                     </span>
-                    <span className="text-tv-red font-extrabold">${item.trade_report.stop_loss.toFixed(2)}</span>
+                    <span className="text-tv-red font-extrabold">{cs}{item.trade_report.stop_loss.toFixed(2)}</span>
                   </div>
                 </div>
 

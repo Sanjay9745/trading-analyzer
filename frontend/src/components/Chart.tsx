@@ -483,22 +483,36 @@ export const Chart: React.FC<ChartProps> = ({
       };
     }
 
-    // Auto-fit content
-    chart.timeScale().fitContent();
+    // Default zoom to focus on the latest 60 bars of price data
+    if (history.length > 0) {
+      const displayRange = Math.min(60, history.length);
+      chart.timeScale().setVisibleLogicalRange({
+        from: history.length - displayRange,
+        to: history.length + 3, // slightly offsets from the right edge for trading margin space
+      });
+    } else {
+      chart.timeScale().fitContent();
+    }
 
-    // Resize handler
-    const handleResize = () => {
-      if (chartContainerRef.current) {
-        chart.applyOptions({
-          width: chartContainerRef.current.clientWidth,
-          height: chartContainerRef.current.clientHeight,
-        });
+    // Resize observer to handle parent container size adjustments
+    const resizeObserver = new ResizeObserver((entries) => {
+      if (!entries || entries.length === 0) return;
+      const { width, height } = entries[0].contentRect;
+      if (chartRef.current) {
+        chartRef.current.resize(width, height);
       }
-    };
-    window.addEventListener('resize', handleResize);
+      requestAnimationFrame(() => {
+        syncCanvasBounds();
+        drawAllDrawings();
+      });
+    });
+
+    if (chartContainerRef.current) {
+      resizeObserver.observe(chartContainerRef.current);
+    }
 
     return () => {
-      window.removeEventListener('resize', handleResize);
+      resizeObserver.disconnect();
       if (wsRefA.current) wsRefA.current.close();
       if (wsRefB.current) wsRefB.current.close();
       chart.unsubscribeClick(handleChartClick);
@@ -1257,9 +1271,9 @@ export const Chart: React.FC<ChartProps> = ({
       {/* 2. Main Chart Canvas Area */}
       <div className="flex-grow h-full flex flex-col relative">
         {/* Chart Header Info Bar */}
-        <div className="flex items-center justify-between px-6 py-3 border-b border-tv-border bg-[#141824] z-10 shadow-sm shrink-0">
-          <div className="flex items-center space-x-4">
-            <span className="text-xl font-extrabold text-white tracking-tight flex items-center space-x-2">
+        <div className="flex flex-col lg:flex-row gap-3 lg:gap-0 lg:items-center justify-between px-4 sm:px-6 py-2.5 sm:py-3 border-b border-tv-border bg-[#141824] z-10 shadow-sm shrink-0">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-4">
+            <span className="text-lg sm:text-xl font-black text-white tracking-tight flex items-center space-x-2">
               <span>{ticker}</span>
               {wsRefA.current && (
                 <span className="flex h-2 w-2 relative">
@@ -1268,12 +1282,12 @@ export const Chart: React.FC<ChartProps> = ({
                 </span>
               )}
             </span>
-            <span className="text-xs bg-tv-border px-2.5 py-1 rounded text-tv-text font-semibold uppercase tracking-wider">
+            <span className="text-[10px] sm:text-xs bg-tv-border px-2 py-0.5 sm:py-1 rounded text-tv-text font-semibold uppercase tracking-wider">
               {ticker.includes('/') ? 'Custom Spread' : 'Daily Interval'}
             </span>
 
             {/* Chart Type Selector */}
-            <div className="flex items-center space-x-1 bg-[#0c0f16]/60 p-1 rounded border border-tv-border/30 ml-4">
+            <div className="flex items-center space-x-1 bg-[#0c0f16]/60 p-0.5 sm:p-1 rounded border border-tv-border/30">
               {[
                 { type: 'candlestick', label: 'Candles' },
                 { type: 'line', label: 'Line' },
@@ -1283,7 +1297,7 @@ export const Chart: React.FC<ChartProps> = ({
                 <button
                   key={item.type}
                   onClick={() => setChartType(item.type as any)}
-                  className={`px-2.5 py-1 text-[10px] rounded font-bold uppercase transition-all ${
+                  className={`px-2 sm:px-2.5 py-0.5 sm:py-1 text-[9px] sm:text-[10px] rounded font-bold uppercase transition-all ${
                     chartType === item.type
                       ? 'bg-tv-green text-white shadow-sm'
                       : 'text-tv-muted hover:text-white hover:bg-tv-border/20'
@@ -1295,25 +1309,26 @@ export const Chart: React.FC<ChartProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center space-x-6">
+          <div className="flex flex-wrap items-center justify-between lg:justify-end gap-3 sm:gap-4 w-full lg:w-auto">
             {hsPattern && (
-              <div className="flex items-center space-x-2 text-xs">
-                <span className="text-yellow-400 font-bold bg-yellow-500/10 border border-yellow-500/20 px-2.5 py-1 rounded">
-                  {hsPattern.type.toUpperCase()} DETECTED
+              <div className="flex flex-wrap items-center gap-1.5 text-[10px] sm:text-xs">
+                <span className="text-yellow-400 font-bold bg-yellow-500/10 border border-yellow-500/20 px-2 py-0.5 sm:py-1 rounded whitespace-nowrap">
+                  {hsPattern.type.toUpperCase().replace(/_/g, ' ')} DETECTED
                 </span>
-                <span className={`px-2.5 py-1 rounded font-extrabold uppercase border ${
+                <span className={`px-2 py-0.5 sm:py-1 rounded font-extrabold uppercase border whitespace-nowrap ${
                   hsPattern.bias === 'Buy' 
                     ? 'bg-tv-green/10 text-tv-green border-tv-green/20' 
                     : 'bg-tv-red/10 text-tv-red border-tv-red/20'
                 }`}>
-                  {hsPattern.bias === 'Buy' ? 'Bullish Breakout' : 'Bearish Breakout'}
+                  {hsPattern.bias === 'Buy' ? 'Bullish' : 'Bearish'} Breakout
                 </span>
               </div>
             )}
             
-            <div className="flex items-center space-x-2 text-xs border-l border-tv-border/80 pl-6 text-tv-muted">
+            <div className="flex items-center space-x-2 text-[10px] sm:text-xs lg:border-l border-tv-border/80 lg:pl-4 text-tv-muted whitespace-nowrap ml-auto lg:ml-0">
               <Activity className="w-3.5 h-3.5 text-tv-green animate-pulse" />
-              <span>FastAPI WebSocket Link Active</span>
+              <span className="hidden sm:inline">FastAPI WebSocket Link Active</span>
+              <span className="sm:hidden">WS Link</span>
             </div>
           </div>
         </div>

@@ -1,14 +1,63 @@
 import asyncio
 import logging
+import time
+import urllib.request
+import random
 from datetime import datetime
 import pandas as pd
 import yfinance as yf
 from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type
-from config import RATE_LIMIT_SEMAPHORE_LIMIT, BATCH_DELAY_SECONDS
+from config import RATE_LIMIT_SEMAPHORE_LIMIT, BATCH_DELAY_SECONDS, USE_PROXIES
 from analyzer import analyze_ticker
 from db import db_instance
 
 logger = logging.getLogger(__name__)
+
+class ProxyManager:
+    _proxies = []
+    _last_fetched = 0
+    _fetch_interval = 600  # 10 minutes in seconds
+
+    @classmethod
+    def get_proxy(cls) -> str | None:
+        now = time.time()
+        # Fetch fresh proxies every 10 minutes or if list is empty
+        if not cls._proxies or (now - cls._last_fetched) > cls._fetch_interval:
+            cls.refresh_proxies()
+            
+        if cls._proxies:
+            return random.choice(cls._proxies)
+        return None
+
+    @classmethod
+    def refresh_proxies(cls):
+        logger.info("Fetching fresh free proxy list...")
+        new_proxies = []
+        try:
+            # SOCKS-List HTTP/HTTPS proxy list is fresh and updated regularly
+            url = "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=8) as response:
+                content = response.read().decode('utf-8')
+                for line in content.splitlines():
+                    val = line.strip()
+                    if val:
+                        new_proxies.append(f"http://{val}")
+            if new_proxies:
+                cls._proxies = new_proxies
+                cls._last_fetched = time.time()
+                logger.info(f"Loaded {len(cls._proxies)} free proxies for rotation.")
+        except Exception as e:
+            logger.warning(f"Failed to fetch proxy list: {e}. Falling back to cached list or direct fetching.")
+
+    @classmethod
+    def remove_proxy(cls, proxy: str):
+        if proxy in cls._proxies:
+            try:
+                cls._proxies.remove(proxy)
+                logger.info(f"Removed failed proxy {proxy} from list. Remaining: {len(cls._proxies)}")
+            except ValueError:
+                pass
 
 # Semaphore to restrict concurrent yfinance network calls
 sem = asyncio.Semaphore(RATE_LIMIT_SEMAPHORE_LIMIT)
@@ -21,26 +70,61 @@ sem = asyncio.Semaphore(RATE_LIMIT_SEMAPHORE_LIMIT)
 )
 def fetch_ticker_data_sync(ticker: str, interval: str = "1d") -> pd.DataFrame:
     """
-    Synchronous yfinance data retrieval wrapped in retry block.
+    Synchronous yfinance data retrieval wrapped in retry block with proxy rotation.
+    Handles '4h' interval by downloading '1h' data and resampling.
     """
-    logger.info(f"Fetching data for {ticker} from yfinance with interval {interval}...")
-    t = yf.Ticker(ticker)
-    
     period_map = {
         "1d": "1y",
+        "4h": "730d",
         "1h": "730d",
         "15m": "60d",
         "5m": "60d"
     }
+    actual_interval = "1h" if interval == "4h" else interval
     period = period_map.get(interval, "1y")
-    
-    df = t.history(period=period, interval=interval)
+    t = yf.Ticker(ticker)
+    df = pd.DataFrame()
+
+    # 1. Try with proxies first (if enabled)
+    if USE_PROXIES:
+        for attempt in range(3): # Try up to 3 different proxies
+            proxy = ProxyManager.get_proxy()
+            if not proxy:
+                break
+            try:
+                logger.info(f"Proxy attempt {attempt+1}/3: Fetching {ticker} via {proxy}...")
+                df = t.history(period=period, interval=actual_interval, proxy=proxy)
+                if not df.empty:
+                    break
+            except Exception as e:
+                logger.warning(f"Proxy {proxy} failed for {ticker}: {e}")
+                ProxyManager.remove_proxy(proxy)
+                
+    # 2. Direct fetch fallback
     if df.empty:
-        raise ValueError(f"No historical data found for {ticker} (interval: {interval})")
+        logger.info(f"Fetching data for {ticker} from yfinance directly...")
+        df = t.history(period=period, interval=actual_interval)
+        if df.empty:
+            raise ValueError(f"No historical data found for {ticker} (interval: {actual_interval})")
     
-    # Deduplicate and sort index to prevent frontend lightweight-charts duplicate timestamp assertions
+    # Deduplicate and sort index
     df = df[~df.index.duplicated(keep='last')]
     df = df.sort_index()
+
+    # Resample 1h to 4h
+    if interval == "4h":
+        df.index = pd.to_datetime(df.index)
+        resample_dict = {
+            'Open': 'first',
+            'High': 'max',
+            'Low': 'min',
+            'Close': 'last',
+            'Volume': 'sum'
+        }
+        cols_to_resample = {col: agg for col, agg in resample_dict.items() if col in df.columns}
+        df = df.resample('4H').agg(cols_to_resample)
+        df = df.dropna(subset=['Close'])
+
     return df
 
 async def fetch_and_analyze(ticker: str, interval: str = "1d") -> dict:
@@ -106,6 +190,11 @@ async def run_batch_scan(tickers: list) -> dict:
                     {"$set": analysis_doc},
                     upsert=True
                 )
+                try:
+                    from redis_cache import redis_cache
+                    await redis_cache.delete(f"ticker_cache:{res['ticker']}:1d")
+                except Exception as cache_err:
+                    logger.warning(f"Failed to clear Redis cache on update: {cache_err}")
             except Exception as db_err:
                 logger.error(f"DB Update Error for {ticker}: {str(db_err)}")
                 failed_tickers.append({"ticker": ticker, "error": f"DB save failed: {str(db_err)}"})

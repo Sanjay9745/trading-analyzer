@@ -7,6 +7,7 @@ from worker import run_batch_scan, fetch_and_analyze
 from config import DEFAULT_TICKERS, SESSION_LIFETIME_DAYS
 from stock_catalog import STOCK_CATALOG
 from auth import hash_password, verify_password, generate_token, get_current_user
+from redis_cache import redis_cache
 import logging
 
 logger = logging.getLogger(__name__)
@@ -117,15 +118,20 @@ async def get_scanner_reports():
 async def get_ticker_history(symbol: str, interval: str = "1d"):
     """
     Retrieves full OHLCV history, EMA curves, candlestick patterns, and H&S overlay geometry
-    for rendering on the chart.
+    for rendering on the chart. Cached in Redis for sub-millisecond execution.
     """
     db = db_instance.db
     if db is None:
         raise HTTPException(status_code=500, detail="Database not initialized")
         
-    valid_intervals = ["1d", "1h", "15m", "5m"]
+    valid_intervals = ["1d", "4h", "1h", "15m", "5m"]
     if interval not in valid_intervals:
         raise HTTPException(status_code=400, detail=f"Invalid interval. Must be one of {valid_intervals}")
+
+    cache_key = f"ticker_cache:{symbol.upper()}:{interval}"
+    cached_data = await redis_cache.get(cache_key)
+    if cached_data:
+        return cached_data
 
     doc = await db.ticker_analysis.find_one({"ticker": symbol.upper(), "interval": interval})
     if not doc:
@@ -148,7 +154,7 @@ async def get_ticker_history(symbol: str, interval: str = "1d"):
         except Exception as e:
             raise HTTPException(status_code=404, detail=f"No analysis data found for symbol {symbol} ({interval}) and failed to fetch on-the-fly: {str(e)}")
         
-    return {
+    response_data = {
         "ticker": doc.get("ticker"),
         "interval": doc.get("interval", "1d"),
         "current_price": doc.get("current_price"),
@@ -157,6 +163,9 @@ async def get_ticker_history(symbol: str, interval: str = "1d"):
         "trade_report": doc.get("trade_report"),
         "last_updated": doc.get("last_updated").isoformat() if isinstance(doc.get("last_updated"), datetime) else str(doc.get("last_updated"))
     }
+    
+    await redis_cache.set(cache_key, response_data)
+    return response_data
 
 # --- AUTHENTICATION SCHEMAS & ROUTES ---
 
@@ -256,6 +265,9 @@ async def get_me(current_user: dict = Depends(get_current_user)):
 
 # --- PERSISTENT USER-SPECIFIC WATCHLISTS ---
 
+class WatchlistBatchRequest(BaseModel):
+    tickers: List[str]
+
 @router.get("/watchlist")
 async def get_watchlist(current_user: dict = Depends(get_current_user)):
     """
@@ -297,6 +309,70 @@ async def add_to_watchlist(payload: WatchlistRequest, current_user: dict = Depen
     
     if symbol not in tickers:
         tickers.append(symbol)
+        await db.watchlist.update_one(
+            {"user_email": email},
+            {"$set": {"tickers": tickers}},
+            upsert=True
+        )
+        
+    return {"watchlist": tickers}
+
+@router.post("/watchlist/batch")
+async def add_batch_to_watchlist(payload: WatchlistBatchRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Appends multiple ticker symbols to the user's private watchlist.
+    """
+    db = db_instance.db
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database not initialized")
+        
+    symbols = [s.upper().strip() for s in payload.tickers if s.upper().strip()]
+    if not symbols:
+        raise HTTPException(status_code=400, detail="Ticker symbols list cannot be empty")
+        
+    email = current_user["email"]
+    wl_doc = await db.watchlist.find_one({"user_email": email})
+    tickers = wl_doc.get("tickers", []) if wl_doc else DEFAULT_TICKERS.copy()
+    
+    updated = False
+    for symbol in symbols:
+        if symbol not in tickers:
+            tickers.append(symbol)
+            updated = True
+            
+    if updated:
+        await db.watchlist.update_one(
+            {"user_email": email},
+            {"$set": {"tickers": tickers}},
+            upsert=True
+        )
+        
+    return {"watchlist": tickers}
+
+@router.post("/watchlist/batch/delete")
+async def remove_batch_from_watchlist(payload: WatchlistBatchRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Removes multiple ticker symbols from the user's private watchlist.
+    """
+    db = db_instance.db
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database not initialized")
+        
+    symbols = [s.upper().strip() for s in payload.tickers if s.upper().strip()]
+    if not symbols:
+        raise HTTPException(status_code=400, detail="Ticker symbols list cannot be empty")
+        
+    email = current_user["email"]
+    wl_doc = await db.watchlist.find_one({"user_email": email})
+    tickers = wl_doc.get("tickers", []) if wl_doc else DEFAULT_TICKERS.copy()
+    
+    updated = False
+    for symbol in symbols:
+        if symbol in tickers:
+            tickers.remove(symbol)
+            updated = True
+            
+    if updated:
         await db.watchlist.update_one(
             {"user_email": email},
             {"$set": {"tickers": tickers}},

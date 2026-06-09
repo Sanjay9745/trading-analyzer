@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Search, Loader2, Sparkles, RefreshCw, BarChart2, Calendar } from 'lucide-react';
+import { getCurrencySymbol } from '../utils/currency';
 
 interface SignalMatrixProps {
   apiBase: string;
@@ -148,15 +149,15 @@ export function SignalMatrix({ apiBase, authToken, onSelectTicker, onNavigateToT
         </div>
 
         {/* Filters Group */}
-        <div className="flex flex-wrap items-center gap-4">
+        <div className="flex flex-wrap items-center gap-4 w-full md:w-auto">
           
           {/* Exchange Filter */}
-          <div className="flex items-center space-x-2">
-            <span className="text-[10px] font-bold text-tv-muted uppercase tracking-wider">Exchange:</span>
+          <div className="flex items-center space-x-2 w-full sm:w-auto">
+            <span className="text-[10px] font-bold text-tv-muted uppercase tracking-wider whitespace-nowrap">Exchange:</span>
             <select
               value={selectedExchange}
               onChange={(e) => setSelectedExchange(e.target.value)}
-              className="bg-[#07090e] border border-tv-border hover:border-tv-muted focus:border-tv-green rounded-lg px-3 py-2 text-xs text-white focus:outline-none transition-all"
+              className="w-full sm:w-auto bg-[#07090e] border border-tv-border hover:border-tv-muted focus:border-tv-green rounded-lg px-3 py-2 text-xs text-white focus:outline-none transition-all cursor-pointer"
             >
               <option value="ALL">All Markets</option>
               <option value="US">US Markets</option>
@@ -166,12 +167,12 @@ export function SignalMatrix({ apiBase, authToken, onSelectTicker, onNavigateToT
           </div>
 
           {/* Signal Filter */}
-          <div className="flex items-center space-x-2">
-            <span className="text-[10px] font-bold text-tv-muted uppercase tracking-wider">Signal Trigger:</span>
+          <div className="flex items-center space-x-2 w-full sm:w-auto">
+            <span className="text-[10px] font-bold text-tv-muted uppercase tracking-wider whitespace-nowrap">Signal Trigger:</span>
             <select
               value={selectedSignal}
               onChange={(e) => setSelectedSignal(e.target.value)}
-              className="bg-[#07090e] border border-tv-border hover:border-tv-muted focus:border-tv-green rounded-lg px-3 py-2 text-xs text-white focus:outline-none transition-all"
+              className="w-full sm:w-auto bg-[#07090e] border border-tv-border hover:border-tv-muted focus:border-tv-green rounded-lg px-3 py-2 text-xs text-white focus:outline-none transition-all cursor-pointer"
             >
               <option value="ALL">All Conditions</option>
               <option value="ACTIVE">Active Signals Only (Buy/Sell)</option>
@@ -204,7 +205,7 @@ export function SignalMatrix({ apiBase, authToken, onSelectTicker, onNavigateToT
       ) : filteredData.length > 0 ? (
         <div className="glass-panel rounded-xl overflow-hidden border border-tv-border/50 mb-12 shadow-2xl">
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+            <table className="w-full min-w-[850px] text-left border-collapse">
               <thead>
                 <tr className="bg-[#07090e]/85 border-b border-tv-border text-[10px] font-extrabold uppercase tracking-wider text-tv-muted">
                   <th className="py-4 px-6">Ticker</th>
@@ -245,7 +246,7 @@ export function SignalMatrix({ apiBase, authToken, onSelectTicker, onNavigateToT
 
                       {/* Current Price */}
                       <td className="py-3.5 px-4 text-right font-bold text-white">
-                        {item.current_price !== null ? `$${item.current_price.toFixed(2)}` : '—'}
+                        {item.current_price !== null ? `${getCurrencySymbol(item.ticker)}${item.current_price.toFixed(2)}` : '—'}
                       </td>
 
                       {/* Pattern */}
@@ -289,17 +290,17 @@ export function SignalMatrix({ apiBase, authToken, onSelectTicker, onNavigateToT
 
                       {/* Entry Price */}
                       <td className="py-3.5 px-4 text-right font-bold">
-                        {item.trade_report ? `$${item.trade_report.entry.toFixed(2)}` : '—'}
+                        {item.trade_report ? `${getCurrencySymbol(item.ticker)}${item.trade_report.entry.toFixed(2)}` : '—'}
                       </td>
 
                       {/* Stop Loss */}
                       <td className="py-3.5 px-4 text-right font-bold text-tv-red/80">
-                        {item.trade_report ? `$${item.trade_report.stop_loss.toFixed(2)}` : '—'}
+                        {item.trade_report ? `${getCurrencySymbol(item.ticker)}${item.trade_report.stop_loss.toFixed(2)}` : '—'}
                       </td>
 
                       {/* Take Profit */}
                       <td className="py-3.5 px-4 text-right font-bold text-tv-green/80">
-                        {item.trade_report ? `$${item.trade_report.take_profit.toFixed(2)}` : '—'}
+                        {item.trade_report ? `${getCurrencySymbol(item.ticker)}${item.trade_report.take_profit.toFixed(2)}` : '—'}
                       </td>
 
                       {/* Last Scanned */}

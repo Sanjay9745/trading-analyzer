@@ -9,6 +9,7 @@ from routes import router
 from config import SCHEDULER_BATCH_SIZE, SCHEDULER_BATCH_DELAY_SECONDS
 from worker import run_batch_scan
 from stock_catalog import STOCK_CATALOG
+from redis_cache import redis_cache
 
 # Setup basic logging
 logging.basicConfig(
@@ -77,6 +78,7 @@ async def lifespan(app: FastAPI):
     # Startup actions
     logger.info("Starting up FastAPI application...")
     db_instance.connect_db()
+    await redis_cache.connect()
     
     # Clean up stale ticker_analysis documents that don't have an 'interval' field
     if db_instance.db is not None:
@@ -104,6 +106,7 @@ async def lifespan(app: FastAPI):
             pass
             
     db_instance.close_db()
+    await redis_cache.disconnect()
 
 app = FastAPI(
     title="Stock Market Analytics Platform API",

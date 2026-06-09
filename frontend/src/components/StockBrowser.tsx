@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, Plus, Check, Globe, Tag, ArrowLeft, Loader2, Sparkles, TrendingUp } from 'lucide-react';
+import { Search, Plus, Check, Globe, Tag, ArrowLeft, Loader2, Sparkles, TrendingUp, Trash2 } from 'lucide-react';
 
 interface Stock {
   symbol: string;
@@ -12,6 +12,8 @@ interface StockBrowserProps {
   watchlist: string[];
   onAddToWatchlist: (ticker: string) => Promise<void>;
   onRemoveFromWatchlist: (ticker: string) => Promise<void>;
+  onAddBatchToWatchlist: (tickers: string[]) => Promise<void>;
+  onRemoveBatchFromWatchlist: (tickers: string[]) => Promise<void>;
   onSelectTicker: (ticker: string) => void;
   onNavigateToTrading: () => void;
   apiBase?: string;
@@ -21,6 +23,8 @@ export function StockBrowser({
   watchlist,
   onAddToWatchlist,
   onRemoveFromWatchlist,
+  onAddBatchToWatchlist,
+  onRemoveBatchFromWatchlist,
   onSelectTicker,
   onNavigateToTrading,
   apiBase = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
@@ -31,6 +35,7 @@ export function StockBrowser({
   const [selectedSector, setSelectedSector] = useState('ALL');
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [batchLoading, setBatchLoading] = useState(false);
 
   // Fetch stocks from the search endpoint
   useEffect(() => {
@@ -80,6 +85,32 @@ export function StockBrowser({
       console.error("Watchlist action failed:", err);
     } finally {
       setActionLoading(null);
+    }
+  };
+
+  const handleSelectAll = async () => {
+    if (filteredStocks.length === 0) return;
+    setBatchLoading(true);
+    const symbols = filteredStocks.map(s => s.symbol);
+    try {
+      await onAddBatchToWatchlist(symbols);
+    } catch (err) {
+      console.error("Batch add failed:", err);
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const handleDeselectAll = async () => {
+    if (filteredStocks.length === 0) return;
+    setBatchLoading(true);
+    const symbols = filteredStocks.map(s => s.symbol);
+    try {
+      await onRemoveBatchFromWatchlist(symbols);
+    } catch (err) {
+      console.error("Batch remove failed:", err);
+    } finally {
+      setBatchLoading(false);
     }
   };
 
@@ -149,10 +180,10 @@ export function StockBrowser({
         </div>
 
         {/* Filters Group */}
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
           
           {/* Exchange Tab Selectors */}
-          <div className="flex bg-[#0c0f16] p-1 rounded-lg border border-tv-border">
+          <div className="flex overflow-x-auto bg-[#0c0f16] p-1 rounded-lg border border-tv-border scrollbar-none shrink-0 max-w-full gap-1">
             {[
               { id: 'ALL', label: 'All Exchanges' },
               { id: 'US', label: 'US Markets' },
@@ -165,7 +196,7 @@ export function StockBrowser({
                   setSelectedExchange(tab.id);
                   setSelectedSector('ALL'); // Reset sector filter when changing exchange
                 }}
-                className={`px-3 py-1.5 text-xs rounded font-bold uppercase transition-all ${
+                className={`whitespace-nowrap px-2.5 sm:px-3 py-1.5 text-xs rounded font-bold uppercase transition-all ${
                   selectedExchange === tab.id
                     ? 'bg-tv-green text-white shadow-md'
                     : 'text-tv-muted hover:text-white hover:bg-tv-border/20'
@@ -177,11 +208,11 @@ export function StockBrowser({
           </div>
 
           {/* Sector Selector Dropdown */}
-          <div className="relative">
+          <div className="relative w-full sm:w-auto">
             <select
               value={selectedSector}
               onChange={(e) => setSelectedSector(e.target.value)}
-              className="appearance-none bg-[#0c0f16] border border-tv-border rounded-lg px-4 py-2 text-xs text-white pr-8 hover:border-tv-muted focus:border-tv-green focus:outline-none transition-all"
+              className="appearance-none w-full bg-[#0c0f16] border border-tv-border rounded-lg px-4 py-2 text-xs text-white pr-8 hover:border-tv-muted focus:border-tv-green focus:outline-none transition-all cursor-pointer"
             >
               {sectors.map(sec => (
                 <option key={sec} value={sec}>
@@ -190,12 +221,44 @@ export function StockBrowser({
               ))}
             </select>
             <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-tv-muted">
-              <ArrowLeft className="w-3.5 h-3.5 rotate-270" style={{ transform: 'rotate(-90deg)' }} />
+              <ArrowLeft className="w-3.5 h-3.5" style={{ transform: 'rotate(-90deg)' }} />
             </div>
           </div>
         </div>
 
       </div>
+
+      {/* Batch Select / Deselect Controls */}
+      {filteredStocks.length > 0 && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between bg-[#141824]/50 border border-tv-border/50 rounded-xl px-5 py-3 gap-3 mb-6">
+          <div className="flex items-center space-x-2">
+            <span className="text-xs text-tv-muted">Filtered Results:</span>
+            <span className="text-xs font-bold text-white bg-tv-border px-2.5 py-0.5 rounded border border-tv-border/50">
+              {filteredStocks.length} {filteredStocks.length === 1 ? 'stock' : 'stocks'}
+            </span>
+          </div>
+          
+          <div className="flex items-center space-x-3">
+            <button
+              onClick={handleSelectAll}
+              disabled={batchLoading}
+              className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-tv-green/15 text-tv-green border border-tv-green/30 hover:bg-tv-green hover:text-white transition-all disabled:opacity-50"
+            >
+              {batchLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+              <span>Add All to Watchlist</span>
+            </button>
+            
+            <button
+              onClick={handleDeselectAll}
+              disabled={batchLoading}
+              className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-tv-red/15 text-tv-red border border-tv-red/30 hover:bg-tv-red hover:text-white transition-all disabled:opacity-50"
+            >
+              {batchLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+              <span>Remove All from Watchlist</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Grid List of Cards */}
       {loading ? (
