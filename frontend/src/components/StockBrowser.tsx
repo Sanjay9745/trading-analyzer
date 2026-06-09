@@ -23,7 +23,7 @@ export function StockBrowser({
   onRemoveFromWatchlist,
   onSelectTicker,
   onNavigateToTrading,
-  apiBase = 'http://localhost:8000'
+  apiBase = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 }: StockBrowserProps) {
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [searchQuery, setSearchQuery] = useState('');

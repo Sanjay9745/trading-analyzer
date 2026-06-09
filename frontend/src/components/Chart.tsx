@@ -398,7 +398,8 @@ export const Chart: React.FC<ChartProps> = ({
 
     // 3. WebSocket Real-time live updates
     lastBarRef.current = { ...history[history.length - 1] };
-    const wsBase = 'ws://localhost:8000/api/ws/ticker';
+    const apiBase = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+    const wsBase = `${apiBase.replace(/^http/, 'ws')}/api/ws/ticker`;
 
     const handleTickUpdate = (newPrice: number) => {
       if (!lastBarRef.current || !candSeriesRef.current || !volumeSeriesRef.current) return;
