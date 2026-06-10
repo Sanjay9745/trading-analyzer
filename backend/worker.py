@@ -34,24 +34,49 @@ class ProxyManager:
 
     @classmethod
     def refresh_proxies(cls):
-        logger.info("Fetching fresh free proxy list...")
-        new_proxies = []
+        logger.info("Fetching fresh free proxy list from hideip.me and ProxyScrape...")
+        new_proxies = set()
+        
+        # 1. zloi-user/hideip.me URLs
+        hideip_urls = [
+            "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt",
+            "https://raw.githubusercontent.com/zloi-user/hideip.me/main/https.txt"
+        ]
+        for url in hideip_urls:
+            try:
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=8) as response:
+                    content = response.read().decode('utf-8', errors='ignore')
+                    for line in content.splitlines():
+                        parts = line.strip().split(':')
+                        if len(parts) >= 2:
+                            ip_port = f"http://{parts[0]}:{parts[1]}"
+                            new_proxies.add(ip_port)
+            except Exception as e:
+                logger.warning(f"Failed to fetch proxies from hideip.me URL {url}: {e}")
+
+        # 2. ProxyScrape URL
+        proxyscrape_url = "https://raw.githubusercontent.com/proxyscrape/free-proxy-list/main/proxies/protocols/http/data.txt"
         try:
-            # SOCKS-List HTTP/HTTPS proxy list is fresh and updated regularly
-            url = "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            req = urllib.request.Request(proxyscrape_url, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, timeout=8) as response:
-                content = response.read().decode('utf-8')
+                content = response.read().decode('utf-8', errors='ignore')
                 for line in content.splitlines():
                     val = line.strip()
                     if val:
-                        new_proxies.append(f"http://{val}")
-            if new_proxies:
-                cls._proxies = new_proxies
-                cls._last_fetched = time.time()
-                logger.info(f"Loaded {len(cls._proxies)} free proxies for rotation.")
+                        if not val.startswith("http://") and not val.startswith("https://"):
+                            val = f"http://{val}"
+                        new_proxies.add(val)
         except Exception as e:
-            logger.warning(f"Failed to fetch proxy list: {e}. Falling back to cached list or direct fetching.")
+            logger.warning(f"Failed to fetch proxies from ProxyScrape: {e}")
+
+        # Save if loaded anything, otherwise warn and keep existing
+        if new_proxies:
+            cls._proxies = list(new_proxies)
+            cls._last_fetched = time.time()
+            logger.info(f"Loaded {len(cls._proxies)} fresh proxies for rotation.")
+        else:
+            logger.warning("All proxy sources failed to fetch any fresh proxies. Keeping existing list.")
 
     @classmethod
     def remove_proxy(cls, proxy: str):
@@ -185,19 +210,150 @@ async def fetch_and_analyze(ticker: str, interval: str = "1d") -> dict:
             logger.error(f"Error fetching/analyzing {ticker}: {str(e)}")
             raise
 
+def fetch_group_data_sync(tickers: list, interval: str = "1d") -> dict:
+    """
+    Downloads historical data for multiple tickers in a single group request.
+    Returns a dictionary mapping ticker to its cleaned DataFrame.
+    """
+    if not tickers:
+        return {}
+
+    period_map = {
+        "1d": "1y",
+        "4h": "730d",
+        "1h": "730d",
+        "15m": "60d",
+        "5m": "60d"
+    }
+    actual_interval = "1h" if interval == "4h" else interval
+    period = period_map.get(interval, "1y")
+    data = pd.DataFrame()
+
+    # 1. Try with proxies first (if enabled)
+    if USE_PROXIES:
+        # 1.a. Try cached working proxy first
+        if ProxyManager._working_proxy:
+            proxy = ProxyManager._working_proxy
+            try:
+                logger.info(f"Group fetch: trying cached working proxy: {proxy}...")
+                with yf_lock:
+                    try:
+                        yf.config.network.proxy = {"http": proxy, "https": proxy}
+                        data = yf.download(
+                            tickers,
+                            period=period,
+                            interval=actual_interval,
+                            group_by='ticker',
+                            progress=False
+                        )
+                    finally:
+                        yf.config.network.proxy = None
+                if data.empty:
+                    logger.warning(f"Cached working proxy {proxy} returned empty data for group fetch. Clearing cache.")
+                    ProxyManager._working_proxy = None
+            except Exception as e:
+                logger.warning(f"Cached working proxy {proxy} failed for group fetch: {e}")
+                ProxyManager._working_proxy = None
+                ProxyManager.remove_proxy(proxy)
+
+        # 1.b. Try rotation if cached proxy didn't work or wasn't set
+        if data.empty:
+            for attempt in range(3): # Try up to 3 different proxies
+                proxy = ProxyManager.get_proxy()
+                if not proxy:
+                    break
+                try:
+                    logger.info(f"Group fetch: proxy attempt {attempt+1}/3 via {proxy}...")
+                    with yf_lock:
+                        try:
+                            yf.config.network.proxy = {"http": proxy, "https": proxy}
+                            data = yf.download(
+                                tickers,
+                                period=period,
+                                interval=actual_interval,
+                                group_by='ticker',
+                                progress=False
+                            )
+                        finally:
+                            yf.config.network.proxy = None
+                    if not data.empty:
+                        ProxyManager._working_proxy = proxy
+                        logger.info(f"Group fetch: successfully cached working proxy: {proxy}")
+                        break
+                except Exception as e:
+                    logger.warning(f"Group fetch: proxy {proxy} failed: {e}")
+                    ProxyManager.remove_proxy(proxy)
+
+    # 2. Direct fetch fallback
+    if data.empty:
+        logger.info("Group fetch: downloading from yfinance directly...")
+        with yf_lock:
+            try:
+                yf.config.network.proxy = None
+                data = yf.download(
+                    tickers,
+                    period=period,
+                    interval=actual_interval,
+                    group_by='ticker',
+                    progress=False
+                )
+            except Exception as e:
+                logger.error(f"Group fetch failed directly: {e}")
+            finally:
+                yf.config.network.proxy = None
+
+    # Parse out and clean DataFrames per ticker
+    ticker_dfs = {}
+    if not data.empty:
+        for ticker in tickers:
+            df = pd.DataFrame()
+            try:
+                if isinstance(data.columns, pd.MultiIndex):
+                    if ticker in data.columns.levels[0]:
+                        df = data[ticker].dropna(how='all')
+                else:
+                    df = data.dropna(how='all')
+            except KeyError:
+                pass
+
+            if not df.empty:
+                # Deduplicate and sort index
+                df = df[~df.index.duplicated(keep='last')]
+                df = df.sort_index()
+
+                # Resample 1h to 4h
+                if interval == "4h":
+                    df.index = pd.to_datetime(df.index)
+                    resample_dict = {
+                        'Open': 'first',
+                        'High': 'max',
+                        'Low': 'min',
+                        'Close': 'last',
+                        'Volume': 'sum'
+                    }
+                    cols_to_resample = {col: agg for col, agg in resample_dict.items() if col in df.columns}
+                    df = df.resample('4h').agg(cols_to_resample)
+                    df = df.dropna(subset=['Close'])
+
+                ticker_dfs[ticker] = df
+
+    return ticker_dfs
+
 async def run_batch_scan(tickers: list) -> dict:
     """
-    Executes scans in parallel with semaphores, saving reports to MongoDB.
+    Executes scans by fetching in group (bulk download) first, and falls back to 
+    individual fetch for any failed tickers, then performs analysis and saves to MongoDB & Redis cache.
     """
     logger.info(f"Starting batch scan for {len(tickers)} tickers: {tickers}")
     
-    tasks = []
-    for ticker in tickers:
-        tasks.append(fetch_and_analyze(ticker))
+    # 1. Fetch data in group using a background executor
+    loop = asyncio.get_running_loop()
+    try:
+        ticker_dfs = await loop.run_in_executor(None, fetch_group_data_sync, tickers, "1d")
+    except Exception as e:
+        logger.error(f"Failed group fetch: {e}. Falling back to individual fetches.")
+        ticker_dfs = {}
         
-    # Gather responses
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
     successful_tickers = []
     failed_tickers = []
     
@@ -207,11 +363,26 @@ async def run_batch_scan(tickers: list) -> dict:
         logger.error("MongoDB is not connected. Skipping DB save.")
         return {"error": "Database not connected"}
         
-    for ticker, res in zip(tickers, results):
-        if isinstance(res, Exception):
-            failed_tickers.append({"ticker": ticker, "error": str(res)})
-        else:
+    for ticker in tickers:
+        df = ticker_dfs.get(ticker)
+        
+        # Fallback to individual fetch if group download failed or returned no data for this ticker
+        if df is None or df.empty:
+            logger.info(f"Ticker {ticker} not found in group fetch. Falling back to individual fetch...")
+            try:
+                # Add delay to avoid overloading
+                await asyncio.sleep(BATCH_DELAY_SECONDS)
+                df = await loop.run_in_executor(None, fetch_ticker_data_sync, ticker, "1d")
+            except Exception as e:
+                logger.error(f"Fallback fetch failed for {ticker}: {str(e)}")
+                failed_tickers.append({"ticker": ticker, "error": f"Data fetch failed: {str(e)}"})
+                continue
+
+        # Run analysis on the DataFrame
+        try:
+            res = await loop.run_in_executor(None, analyze_ticker, df, ticker, "1d")
             successful_tickers.append(ticker)
+            
             # Save or update in MongoDB (keyed by ticker + interval)
             analysis_doc = {
                 "ticker": res["ticker"],
@@ -222,21 +393,33 @@ async def run_batch_scan(tickers: list) -> dict:
                 "trade_report": res["trade_report"],
                 "last_updated": datetime.utcnow()
             }
+            
+            await db.ticker_analysis.update_one(
+                {"ticker": res["ticker"], "interval": "1d"},
+                {"$set": analysis_doc},
+                upsert=True
+            )
+            
+            # Save directly to Redis cache
             try:
-                await db.ticker_analysis.update_one(
-                    {"ticker": res["ticker"], "interval": "1d"},
-                    {"$set": analysis_doc},
-                    upsert=True
-                )
-                try:
-                    from redis_cache import redis_cache
-                    await redis_cache.delete(f"ticker_cache:{res['ticker']}:1d")
-                except Exception as cache_err:
-                    logger.warning(f"Failed to clear Redis cache on update: {cache_err}")
-            except Exception as db_err:
-                logger.error(f"DB Update Error for {ticker}: {str(db_err)}")
-                failed_tickers.append({"ticker": ticker, "error": f"DB save failed: {str(db_err)}"})
+                from redis_cache import redis_cache
+                response_data = {
+                    "ticker": res["ticker"],
+                    "interval": "1d",
+                    "current_price": res["current_price"],
+                    "history": res["history"],
+                    "hs_pattern": res["hs_pattern"],
+                    "trade_report": res["trade_report"],
+                    "last_updated": analysis_doc["last_updated"].isoformat()
+                }
+                await redis_cache.set(f"ticker_cache:{res['ticker']}:1d", response_data)
+            except Exception as cache_err:
+                logger.warning(f"Failed to update Redis cache for {ticker}: {cache_err}")
                 
+        except Exception as analysis_err:
+            logger.error(f"Error analyzing or saving {ticker}: {str(analysis_err)}")
+            failed_tickers.append({"ticker": ticker, "error": f"Analysis/Save failed: {str(analysis_err)}"})
+            
     summary = {
         "timestamp": datetime.utcnow(),
         "total_scanned": len(tickers),
