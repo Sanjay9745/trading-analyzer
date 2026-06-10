@@ -15,7 +15,7 @@ SCHEDULER_BATCH_SIZE = 100
 SCHEDULER_BATCH_DELAY_SECONDS = 300  # 5 minutes in seconds
 
 # Proxy rotation for data fetching (prevents IP blacklisting)
-USE_PROXIES = True
+USE_PROXIES = False
 
 DEFAULT_TICKERS = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "META",
