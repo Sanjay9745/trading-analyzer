@@ -8,7 +8,7 @@ RATE_LIMIT_SEMAPHORE_LIMIT = 2
 BATCH_DELAY_SECONDS = 0.5
 
 # Authentication & Session configuration
-SESSION_LIFETIME_DAYS = 7
+SESSION_LIFETIME_DAYS = 365
 
 # Scheduler configuration for midnight full scan
 SCHEDULER_BATCH_SIZE = 100

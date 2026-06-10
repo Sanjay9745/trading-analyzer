@@ -152,6 +152,31 @@ function App() {
     addLog('[AUTH] User logged out.');
   };
 
+  // Automatically intercept API 401 Unauthorized responses to logout the user
+  useEffect(() => {
+    const originalFetch = window.fetch;
+    window.fetch = async (...args) => {
+      const response = await originalFetch(...args);
+      if (response.status === 401) {
+        const token = localStorage.getItem('session_token');
+        const urlStr = typeof args[0] === 'string' ? args[0] : (args[0] as any)?.url || '';
+        // Only trigger auto logout if we currently have an active token and this isn't an auth endpoint
+        if (token && !urlStr.includes('/api/auth/login') && !urlStr.includes('/api/auth/register') && !urlStr.includes('/api/auth/logout')) {
+          setAuthToken(null);
+          setUserEmail(null);
+          localStorage.removeItem('session_token');
+          localStorage.removeItem('user_email');
+          setWatchlist([]);
+          addLog('[AUTH] Session expired. Automatically logged out.');
+        }
+      }
+      return response;
+    };
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, []);
+
   // Fetch Watchlist & Reports whenever authToken changes
   useEffect(() => {
     if (authToken) {
