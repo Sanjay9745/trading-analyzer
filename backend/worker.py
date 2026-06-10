@@ -3,6 +3,7 @@ import logging
 import time
 import urllib.request
 import random
+import threading
 from datetime import datetime
 import pandas as pd
 import yfinance as yf
@@ -12,9 +13,11 @@ from analyzer import analyze_ticker
 from db import db_instance
 
 logger = logging.getLogger(__name__)
+yf_lock = threading.Lock()
 
 class ProxyManager:
     _proxies = []
+    _working_proxy = None
     _last_fetched = 0
     _fetch_interval = 600  # 10 minutes in seconds
 
@@ -82,28 +85,63 @@ def fetch_ticker_data_sync(ticker: str, interval: str = "1d") -> pd.DataFrame:
     }
     actual_interval = "1h" if interval == "4h" else interval
     period = period_map.get(interval, "1y")
-    t = yf.Ticker(ticker)
     df = pd.DataFrame()
 
     # 1. Try with proxies first (if enabled)
     if USE_PROXIES:
-        for attempt in range(3): # Try up to 3 different proxies
-            proxy = ProxyManager.get_proxy()
-            if not proxy:
-                break
+        # 1.a. Try cached working proxy first
+        if ProxyManager._working_proxy:
+            proxy = ProxyManager._working_proxy
             try:
-                logger.info(f"Proxy attempt {attempt+1}/3: Fetching {ticker} via {proxy}...")
-                df = t.history(period=period, interval=actual_interval, proxy=proxy)
-                if not df.empty:
-                    break
+                logger.info(f"Trying cached working proxy: {proxy}...")
+                with yf_lock:
+                    try:
+                        yf.config.network.proxy = {"http": proxy, "https": proxy}
+                        t = yf.Ticker(ticker)
+                        df = t.history(period=period, interval=actual_interval)
+                    finally:
+                        yf.config.network.proxy = None
+                if df.empty:
+                    logger.warning(f"Cached working proxy {proxy} returned empty data for {ticker}. Clearing cache.")
+                    ProxyManager._working_proxy = None
             except Exception as e:
-                logger.warning(f"Proxy {proxy} failed for {ticker}: {e}")
+                logger.warning(f"Cached working proxy {proxy} failed for {ticker}: {e}")
+                ProxyManager._working_proxy = None
                 ProxyManager.remove_proxy(proxy)
+
+        # 1.b. Try rotation if cached proxy didn't work or wasn't set
+        if df.empty:
+            for attempt in range(3): # Try up to 3 different proxies
+                proxy = ProxyManager.get_proxy()
+                if not proxy:
+                    break
+                try:
+                    logger.info(f"Proxy attempt {attempt+1}/3: Fetching {ticker} via {proxy}...")
+                    with yf_lock:
+                        try:
+                            yf.config.network.proxy = {"http": proxy, "https": proxy}
+                            t = yf.Ticker(ticker)
+                            df = t.history(period=period, interval=actual_interval)
+                        finally:
+                            yf.config.network.proxy = None
+                    if not df.empty:
+                        ProxyManager._working_proxy = proxy
+                        logger.info(f"Successfully cached working proxy: {proxy}")
+                        break
+                except Exception as e:
+                    logger.warning(f"Proxy {proxy} failed for {ticker}: {e}")
+                    ProxyManager.remove_proxy(proxy)
                 
     # 2. Direct fetch fallback
     if df.empty:
         logger.info(f"Fetching data for {ticker} from yfinance directly...")
-        df = t.history(period=period, interval=actual_interval)
+        with yf_lock:
+            try:
+                yf.config.network.proxy = None
+                t = yf.Ticker(ticker)
+                df = t.history(period=period, interval=actual_interval)
+            finally:
+                yf.config.network.proxy = None
         if df.empty:
             raise ValueError(f"No historical data found for {ticker} (interval: {actual_interval})")
     
@@ -122,7 +160,7 @@ def fetch_ticker_data_sync(ticker: str, interval: str = "1d") -> pd.DataFrame:
             'Volume': 'sum'
         }
         cols_to_resample = {col: agg for col, agg in resample_dict.items() if col in df.columns}
-        df = df.resample('4H').agg(cols_to_resample)
+        df = df.resample('4h').agg(cols_to_resample)
         df = df.dropna(subset=['Close'])
 
     return df
