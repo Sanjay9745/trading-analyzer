@@ -360,23 +360,47 @@ def fetch_group_data_sync(tickers: list, interval: str = "1d") -> dict:
 
 async def run_batch_scan(tickers: list) -> dict:
     """
-    Executes scans by fetching each ticker individually with a semaphore,
-    performing analysis, and saving to MongoDB & Redis cache.
+    Executes scans by fetching in group (bulk download) first, and falls back to 
+    individual fetch for any failed tickers, then performs analysis and saves to MongoDB & Redis cache.
     """
-    logger.info(f"Starting batch scan individually for {len(tickers)} tickers")
+    logger.info(f"Starting batch scan for {len(tickers)} tickers: {tickers}")
     
+    # 1. Fetch data in group using a background executor
+    loop = asyncio.get_running_loop()
+    try:
+        ticker_dfs = await loop.run_in_executor(None, fetch_group_data_sync, tickers, "1d")
+    except Exception as e:
+        logger.error(f"Failed group fetch: {e}. Falling back to individual fetches.")
+        ticker_dfs = {}
+        
+    successful_tickers = []
+    failed_tickers = []
+    
+    # Store results in MongoDB
     db = db_instance.db
     if db is None:
         logger.error("MongoDB is not connected. Skipping DB save.")
         return {"error": "Database not connected"}
         
-    successful_tickers = []
-    failed_tickers = []
-    
-    async def scan_and_save(ticker: str):
+    for ticker in tickers:
+        df = ticker_dfs.get(ticker)
+        
+        # Fallback to individual fetch if group download failed or returned no data for this ticker
+        if df is None or df.empty:
+            logger.info(f"Ticker {ticker} not found in group fetch. Falling back to individual fetch...")
+            try:
+                # Add delay to avoid overloading
+                await asyncio.sleep(BATCH_DELAY_SECONDS)
+                df = await loop.run_in_executor(None, fetch_ticker_data_sync, ticker, "1d")
+            except Exception as e:
+                logger.error(f"Fallback fetch failed for {ticker}: {str(e)}")
+                failed_tickers.append({"ticker": ticker, "error": f"Data fetch failed: {str(e)}"})
+                continue
+
+        # Run analysis on the DataFrame
         try:
-            # fetch_and_analyze already uses the semaphore and rate limit delay
-            res = await fetch_and_analyze(ticker, "1d")
+            res = await loop.run_in_executor(None, analyze_ticker, df, ticker, "1d")
+            successful_tickers.append(ticker)
             
             # Save or update in MongoDB (keyed by ticker + interval)
             analysis_doc = {
@@ -411,15 +435,10 @@ async def run_batch_scan(tickers: list) -> dict:
             except Exception as cache_err:
                 logger.warning(f"Failed to update Redis cache for {ticker}: {cache_err}")
                 
-            successful_tickers.append(ticker)
-        except Exception as e:
-            logger.error(f"Failed individual batch scan task for {ticker}: {e}")
-            failed_tickers.append({"ticker": ticker, "error": str(e)})
+        except Exception as analysis_err:
+            logger.error(f"Error analyzing or saving {ticker}: {str(analysis_err)}")
+            failed_tickers.append({"ticker": ticker, "error": f"Analysis/Save failed: {str(analysis_err)}"})
             
-    # Run all tasks concurrently, governed by the semaphore inside fetch_and_analyze
-    tasks = [scan_and_save(ticker) for ticker in tickers]
-    await asyncio.gather(*tasks)
-    
     summary = {
         "timestamp": datetime.utcnow(),
         "total_scanned": len(tickers),
@@ -433,6 +452,5 @@ async def run_batch_scan(tickers: list) -> dict:
     except Exception as db_err:
         logger.error(f"Failed to save scan report summary: {str(db_err)}")
         
-    logger.info(f"Completed batch scan individually. Success: {len(successful_tickers)}, Failures: {len(failed_tickers)}")
+    logger.info(f"Completed batch scan. Success: {len(successful_tickers)}, Failures: {len(failed_tickers)}")
     return summary
-
