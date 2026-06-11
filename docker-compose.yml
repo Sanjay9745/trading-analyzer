@@ -5,7 +5,7 @@ services:
     ports:
       - "27017:27017"
     volumes:
-      - mongo_data:/data/db
+      - ./mongodb_data:/data/db
     restart: unless-stopped
 
   redis:
@@ -30,5 +30,4 @@ services:
       - redis
     restart: unless-stopped
 
-volumes:
-  mongo_data:
+

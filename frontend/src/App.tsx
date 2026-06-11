@@ -366,9 +366,14 @@ function App() {
 
   const handleTriggerScan = async () => {
     if (!authToken) return;
+    const tickersToScan = watchlist.filter(t => !t.includes('/'));
+    if (tickersToScan.length === 0) {
+      addLog('[SCAN] Watchlist has no standard tickers to scan.');
+      return;
+    }
     setIsScanning(true);
     setErrorMessage(null);
-    addLog('[SCAN] Initiating multi-threaded quantitative scanner job in background...');
+    addLog(`[SCAN] Initiating multi-threaded quantitative scanner job for ${tickersToScan.length} tickers...`);
     
     try {
       const res = await fetch(`${API_BASE}/api/scanner/run`, {
@@ -377,7 +382,7 @@ function App() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${authToken}`
         },
-        body: JSON.stringify({ tickers: watchlist }),
+        body: JSON.stringify({ tickers: tickersToScan }),
       });
       if (res.ok) {
         let attempts = 0;
@@ -709,8 +714,19 @@ function App() {
           <aside className={`absolute lg:static inset-y-0 left-0 z-30 w-[280px] sm:w-64 border-r border-tv-border bg-[#101420] flex flex-col h-full shrink-0 transition-transform duration-200 ease-in-out ${
             showWatchlistSidebar ? 'translate-x-0' : '-translate-x-full lg:hidden'
           }`}>
-            <div className="p-4 border-b border-tv-border/40 bg-[#141824] shrink-0">
+            <div className="p-4 border-b border-tv-border/40 bg-[#141824] shrink-0 flex items-center justify-between">
               <h3 className="text-xs font-extrabold tracking-widest text-white uppercase">Watchlist & Pairs</h3>
+              {watchlist.length > 0 && (
+                <button
+                  onClick={handleTriggerScan}
+                  disabled={isScanning}
+                  className="p-1.5 rounded text-tv-muted hover:text-tv-green hover:bg-tv-border/30 transition-all flex items-center gap-1.5 text-[9px] font-extrabold uppercase tracking-wider disabled:opacity-50"
+                  title="Rerun Watchlist Scan"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isScanning ? 'animate-spin' : ''}`} />
+                  <span>Refresh</span>
+                </button>
+              )}
             </div>
             
             <div className="flex-grow overflow-y-auto p-4 space-y-4">

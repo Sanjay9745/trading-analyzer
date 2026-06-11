@@ -15,6 +15,25 @@ from db import db_instance
 logger = logging.getLogger(__name__)
 yf_lock = threading.Lock()
 
+# Configure custom tz cache location to avoid permission/file existence issues inside docker
+import os
+import tempfile
+try:
+    tz_cache_dir = os.environ.get("YFINANCE_CACHE_DIR")
+    if not tz_cache_dir:
+        # Check if we are running in the docker container (usually WORKDIR is /app)
+        if os.path.exists("/app") and os.access("/app", os.W_OK):
+            tz_cache_dir = "/app/.cache/py-yfinance"
+        else:
+            tz_cache_dir = os.path.join(tempfile.gettempdir(), "py-yfinance")
+            
+    os.makedirs(tz_cache_dir, exist_ok=True)
+    yf.set_tz_cache_location(tz_cache_dir)
+    logger.info(f"Set yfinance tz cache location to {tz_cache_dir}")
+except Exception as e:
+    logger.warning(f"Could not set yfinance tz cache location: {e}")
+
+
 class ProxyManager:
     _proxies = []
     _working_proxy = None
